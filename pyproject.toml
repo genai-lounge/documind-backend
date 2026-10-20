@@ -5,6 +5,9 @@ description = "DocuMind backend: FastAPI API for the RAG document assistant"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.147.0",
+    "pymupdf>=2.0",
+    "python-docx>=1.2.0",
+    "python-multipart>=0.0.32",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -13,4 +16,9 @@ dev = [
     "httpx2>=2.14.0",
     "pytest>=9.1.1",
     "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
 ]
