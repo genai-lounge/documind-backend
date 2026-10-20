@@ -12,6 +12,7 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+docs/*
 
 # OS / editor
 .DS_Store
