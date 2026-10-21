@@ -1,8 +1,9 @@
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.core.config import Settings
+from app.main import create_app
 
-client = TestClient(app)
+client = TestClient(create_app(Settings(_env_file=None)))
 
 
 def test_health_returns_ok() -> None:

@@ -1,39 +1,41 @@
-from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
+"""Application entry point.
+
+`create_app()` is an app factory: it builds a fully wired FastAPI app from
+Settings. Tests call it with their own Settings; uvicorn uses the module-level
+`app` below (`uv run uvicorn app.main:app`).
+"""
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
-from app import config
-from app.routes import documents
-
-app = FastAPI(title="DocuMind API", version="0.1.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.CORS_ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
-
-app.include_router(documents.router)
+from app.api.errors import register_error_handlers
+from app.api.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
+from app.api.v1.router import router as v1_router
+from app.container import Container
+from app.core.config import Settings
+from app.core.logging_config import configure_logging
 
 
-@app.exception_handler(RequestValidationError)
-def validation_error_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
-    """Return request-validation errors (e.g. no file sent) in the API's standard error shape."""
-    return JSONResponse(
-        status_code=422,
-        content={
-            "detail": {
-                "code": "invalid_request",
-                "message": "The request is missing a required field or has an invalid value.",
-            }
-        },
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or Settings()
+    configure_logging(settings.log_level, settings.log_format)
+    container = Container(settings)
+
+    app = FastAPI(title="DocuMind API", version="0.1.0")
+    app.state.ingest_document = container.ingest_document
+
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+        expose_headers=[REQUEST_ID_HEADER],
     )
 
+    register_error_handlers(app)
+    app.include_router(v1_router)
+    return app
 
-@app.get("/api/v1/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+
+app = create_app()

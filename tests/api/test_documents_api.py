@@ -1,27 +1,32 @@
+from collections.abc import Iterator
+
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config
-from app.main import app
-from tests.conftest import make_pdf
+from app.api.dependencies import get_ingest_document
+from app.application.ingest_document import IngestDocument
+from app.container import Container
+from app.core.config import Settings
+from app.main import create_app
+from tests.factories import make_pdf
 
+SETTINGS = Settings(_env_file=None)
+app = create_app(SETTINGS)
 client = TestClient(app)
 
 URL = "/api/v1/documents"
 
 
-def upload(filename: str, data: bytes):
+def upload(filename: str, data: bytes) -> httpx2.Response:
     return client.post(URL, files={"file": (filename, data)})
 
 
-def assert_error(response, status_code: int, code: str) -> None:
+def assert_error(response: httpx2.Response, status_code: int, code: str) -> None:
     assert response.status_code == status_code
     body = response.json()
     assert body["detail"]["code"] == code
     assert body["detail"]["message"]
-
-
-# --- Success cases ---
 
 
 def test_upload_pdf(two_page_pdf: bytes) -> None:
@@ -80,9 +85,6 @@ def test_each_upload_gets_a_new_id() -> None:
     assert first != second
 
 
-# --- Textless documents ---
-
-
 def test_scanned_style_pdf_reports_no_text() -> None:
     response = upload("scan.pdf", make_pdf(["", ""]))
 
@@ -107,9 +109,6 @@ def test_whitespace_only_txt_reports_no_text() -> None:
     assert body["warnings"] == ["No text was found in this file."]
 
 
-# --- Rejected uploads ---
-
-
 @pytest.mark.parametrize("filename", ["image.png", "archive.zip", "README", "doc.doc"])
 def test_unsupported_extension(filename: str) -> None:
     assert_error(upload(filename, b"data"), 415, "unsupported_file_type")
@@ -129,15 +128,22 @@ def test_empty_file() -> None:
     assert_error(upload("empty.txt", b""), 400, "empty_file")
 
 
-def test_file_over_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_BYTES", 10)
+@pytest.fixture
+def ten_byte_limit() -> Iterator[None]:
+    """Swap in a use case with a 10-byte limit, via dependency injection."""
+    parsers = Container(SETTINGS).parser_registry
+    app.dependency_overrides[get_ingest_document] = lambda: IngestDocument(
+        parsers=parsers, max_upload_bytes=10
+    )
+    yield
+    app.dependency_overrides.clear()
 
+
+def test_file_over_limit(ten_byte_limit: None) -> None:
     assert_error(upload("big.txt", b"x" * 11), 413, "file_too_large")
 
 
-def test_file_exactly_at_limit_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_BYTES", 10)
-
+def test_file_exactly_at_limit_is_accepted(ten_byte_limit: None) -> None:
     assert upload("ok.txt", b"x" * 10).status_code == 200
 
 
@@ -160,9 +166,6 @@ def test_non_utf8_txt() -> None:
 
 def test_missing_file_field() -> None:
     assert_error(client.post(URL), 422, "invalid_request")
-
-
-# --- CORS ---
 
 
 def test_cors_allows_frontend_origin() -> None:

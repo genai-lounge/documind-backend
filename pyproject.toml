@@ -5,6 +5,7 @@ description = "DocuMind backend: FastAPI API for the RAG document assistant"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.147.0",
+    "pydantic-settings>=2.16.1",
     "pymupdf>=2.0",
     "python-docx>=1.2.0",
     "python-multipart>=0.0.32",
@@ -14,6 +15,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx2>=2.14.0",
+    "import-linter>=2.15",
+    "mypy>=2.4.0",
     "pytest>=9.1.1",
     "ruff>=0.17.1",
 ]
@@ -22,3 +25,56 @@ dev = [
 filterwarnings = [
     "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
 ]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["app", "tests"]
+
+[[tool.mypy.overrides]]
+# PyMuPDF ships incomplete type hints. Relax untyped-call checks only in the
+# two modules that touch it; everything else stays fully strict.
+module = ["app.infrastructure.parsing.pymupdf_parser", "tests.factories"]
+disallow_untyped_calls = false
+warn_return_any = false
+
+# --- Architecture rules, checked by `uv run lint-imports` ---
+# The dependency rule: code may only import from layers BELOW it.
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers: composition root > api | infrastructure > core > application > domain"
+type = "layers"
+layers = [
+    "app.main",
+    "app.container",
+    "app.api | app.infrastructure",
+    "app.core",
+    "app.application",
+    "app.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain and use cases stay free of frameworks and vendor libraries"
+type = "forbidden"
+source_modules = ["app.domain", "app.application"]
+forbidden_modules = [
+    "fastapi",
+    "starlette",
+    "pydantic",
+    "pydantic_settings",
+    "pymupdf",
+    "docx",
+]
+
+[[tool.importlinter.contracts]]
+name = "Vendor libraries are only used inside infrastructure adapters"
+type = "forbidden"
+source_modules = ["app.api", "app.core", "app.container", "app.main"]
+forbidden_modules = ["pymupdf", "docx"]
+# Reaching vendors THROUGH adapters (main -> container -> adapter) is the point
+# of wiring; only direct imports are forbidden.
+allow_indirect_imports = true
