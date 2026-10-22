@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_ingest_document
 from app.core.config import Settings
 from app.main import create_app
+from tests.fakes import FakeEmbeddingProvider
 
 URL = "/api/v1/documents"
 FRONTEND = "http://localhost:3008"
@@ -16,7 +17,9 @@ FRONTEND = "http://localhost:3008"
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(create_app(Settings(_env_file=None)))
+    return TestClient(
+        create_app(Settings(_env_file=None), embedding_provider=FakeEmbeddingProvider())
+    )
 
 
 class ExplodingUseCase:
@@ -26,7 +29,9 @@ class ExplodingUseCase:
 
 @pytest.fixture
 def broken_client() -> TestClient:
-    app = create_app(Settings(_env_file=None))
+    app = create_app(
+        Settings(_env_file=None), embedding_provider=FakeEmbeddingProvider()
+    )
     app.dependency_overrides[get_ingest_document] = ExplodingUseCase
     return TestClient(app)
 

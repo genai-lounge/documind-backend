@@ -30,6 +30,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
             "description": "Unsupported or mismatched file type",
         },
         422: {"model": ErrorResponse, "description": "File could not be parsed"},
+        503: {"model": ErrorResponse, "description": "Embedding service unavailable"},
     },
 )
 def upload_document(

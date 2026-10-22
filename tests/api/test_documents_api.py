@@ -10,9 +10,11 @@ from app.container import Container
 from app.core.config import Settings
 from app.main import create_app
 from tests.factories import make_pdf
+from tests.fakes import FakeEmbeddingProvider
 
 SETTINGS = Settings(_env_file=None)
-app = create_app(SETTINGS)
+EMBEDDER = FakeEmbeddingProvider(dimensions=16)
+app = create_app(SETTINGS, embedding_provider=EMBEDDER)
 client = TestClient(app)
 
 URL = "/api/v1/documents"
@@ -131,9 +133,12 @@ def test_empty_file() -> None:
 @pytest.fixture
 def ten_byte_limit() -> Iterator[None]:
     """Swap in a use case with a 10-byte limit, via dependency injection."""
-    parsers = Container(SETTINGS).parser_registry
+    container = Container(SETTINGS, embedding_provider=EMBEDDER)
     app.dependency_overrides[get_ingest_document] = lambda: IngestDocument(
-        parsers=parsers, max_upload_bytes=10
+        parsers=container.parser_registry,
+        chunker=container.chunker,
+        embedder=container.embedding_provider,
+        max_upload_bytes=10,
     )
     yield
     app.dependency_overrides.clear()
@@ -190,3 +195,33 @@ def test_cors_rejects_unknown_origin() -> None:
     )
 
     assert "access-control-allow-origin" not in response.headers
+
+
+# --- Chunks and embeddings ---
+
+
+def test_upload_returns_embedded_chunks(two_page_pdf: bytes) -> None:
+    body = upload("report.pdf", two_page_pdf).json()
+
+    assert body["embedding"] == {"model": "fake-embedder", "dimensions": 16}
+    assert [c["chunk_index"] for c in body["chunks"]] == [0, 1]
+    assert [c["page_number"] for c in body["chunks"]] == [1, 2]
+    first = body["chunks"][0]
+    page_text = body["sections"][0]["text"]
+    assert first["text"] == page_text[first["start_char"] : first["end_char"]]
+    assert first["char_count"] == len(first["text"])
+    assert len(first["embedding_preview"]) == 8
+
+
+def test_document_without_text_has_no_chunks() -> None:
+    body = upload("scan.pdf", make_pdf(["", ""])).json()
+
+    assert body["chunks"] == []
+    assert body["embedding"] is None
+
+
+def test_long_text_is_split_into_several_chunks() -> None:
+    body = upload("long.txt", ("A sentence about revenue. " * 200).encode()).json()
+
+    assert len(body["chunks"]) > 1
+    assert all(c["char_count"] <= SETTINGS.chunk_size for c in body["chunks"])

@@ -12,9 +12,15 @@ in a different instance without touching any route code.
 
 from fastapi import Request
 
+from app.application.compare_texts import CompareTexts
 from app.application.ingest_document import IngestDocument
 
 
 def get_ingest_document(request: Request) -> IngestDocument:
     use_case: IngestDocument = request.app.state.ingest_document
+    return use_case
+
+
+def get_compare_texts(request: Request) -> CompareTexts:
+    use_case: CompareTexts = request.app.state.compare_texts
     return use_case

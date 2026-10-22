@@ -1,12 +1,11 @@
-"""Use case: accept an uploaded file and extract its text.
+"""Use case: accept an uploaded file, extract its text, chunk it, and embed the chunks.
 
 A use case describes one thing the application does, step by step, using only
 ports and domain objects. It does not know about HTTP, FastAPI, or which
 library parses PDFs, so it can be tested with fakes and reused from other
 entry points (a CLI, a background worker).
 
-Later phases extend this flow: chunking and embeddings (Phase 2), then file
-storage and indexing (Phase 3).
+Phase 3 extends this flow with file storage and indexing.
 """
 
 import logging
@@ -18,6 +17,7 @@ from pathlib import PurePath
 from typing import BinaryIO
 
 from app.application.parser_registry import ParserRegistry
+from app.application.ports import Chunker, EmbeddingProvider
 from app.domain.errors import (
     EmptyFile,
     FileTooLarge,
@@ -25,7 +25,12 @@ from app.domain.errors import (
     MissingFilename,
     UnsupportedFileType,
 )
-from app.domain.models import Document, ExtractionStatus, ParsedContent
+from app.domain.models import (
+    Document,
+    EmbeddedChunk,
+    ExtractionStatus,
+    ParsedContent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,17 +45,22 @@ class IngestDocument:
     def __init__(
         self,
         parsers: ParserRegistry,
+        chunker: Chunker,
+        embedder: EmbeddingProvider,
         max_upload_bytes: int,
         new_id: Callable[[], str] = _new_document_id,
     ) -> None:
         self._parsers = parsers
+        self._chunker = chunker
+        self._embedder = embedder
         self._max_upload_bytes = max_upload_bytes
         self._new_id = new_id
 
     def execute(self, filename: str, stream: BinaryIO) -> Document:
-        """Validate the upload, parse it, and return the extracted document.
+        """Validate, parse, chunk, and embed an upload.
 
-        Checks run cheapest first, so a bad request fails before any parsing.
+        Checks run cheapest first, so a bad request fails before any parsing,
+        and parsing problems surface before any (paid) embedding call.
         """
         started = time.perf_counter()
 
@@ -80,6 +90,10 @@ class IngestDocument:
             )
 
         content = _with_no_text_warning(parser.parse(data))
+        chunks = self._chunker.chunk(content.sections)
+        vectors = (
+            self._embedder.embed_documents([c.text for c in chunks]) if chunks else []
+        )
         document = Document(
             id=self._new_id(),
             filename=name,
@@ -89,6 +103,11 @@ class IngestDocument:
             if content.has_text
             else ExtractionStatus.NO_TEXT,
             content=content,
+            chunks=tuple(
+                EmbeddedChunk(chunk=c, vector=v)
+                for c, v in zip(chunks, vectors, strict=True)
+            ),
+            embedding_model=self._embedder.model if chunks else None,
         )
 
         logger.info(
@@ -98,6 +117,7 @@ class IngestDocument:
                 "file_type": document.file_type,
                 "size_bytes": document.size_bytes,
                 "sections": len(content.sections),
+                "chunks": len(chunks),
                 "status": document.status.value,
                 "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             },

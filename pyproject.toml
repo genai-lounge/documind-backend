@@ -5,6 +5,7 @@ description = "DocuMind backend: FastAPI API for the RAG document assistant"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.147.0",
+    "httpx2>=2.14.0",
     "pydantic-settings>=2.16.1",
     "pymupdf>=2.0",
     "python-docx>=1.2.0",
@@ -12,9 +13,13 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
 ]
 
+[project.optional-dependencies]
+fastembed = [
+    "fastembed>=0.9.0",
+]
+
 [dependency-groups]
 dev = [
-    "httpx2>=2.14.0",
     "import-linter>=2.15",
     "mypy>=2.4.0",
     "pytest>=9.1.1",
@@ -26,6 +31,10 @@ filterwarnings = [
     "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
 ]
 testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = [
+    "live: calls real external services; needs credentials (run with `make test-live`)",
+]
 
 [tool.mypy]
 strict = true
@@ -39,6 +48,10 @@ module = ["app.infrastructure.parsing.pymupdf_parser", "tests.factories"]
 disallow_untyped_calls = false
 warn_return_any = false
 
+[[tool.mypy.overrides]]
+module = ["fastembed", "fastembed.*"]
+ignore_missing_imports = true
+
 # --- Architecture rules, checked by `uv run lint-imports` ---
 # The dependency rule: code may only import from layers BELOW it.
 [tool.importlinter]
@@ -51,6 +64,7 @@ type = "layers"
 layers = [
     "app.main",
     "app.container",
+    "app.embedding_providers",
     "app.api | app.infrastructure",
     "app.core",
     "app.application",
@@ -68,13 +82,21 @@ forbidden_modules = [
     "pydantic_settings",
     "pymupdf",
     "docx",
+    "httpx2",
+    "fastembed",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Vendor libraries are only used inside infrastructure adapters"
 type = "forbidden"
-source_modules = ["app.api", "app.core", "app.container", "app.main"]
-forbidden_modules = ["pymupdf", "docx"]
+source_modules = [
+    "app.api",
+    "app.core",
+    "app.container",
+    "app.embedding_providers",
+    "app.main",
+]
+forbidden_modules = ["pymupdf", "docx", "httpx2", "fastembed"]
 # Reaching vendors THROUGH adapters (main -> container -> adapter) is the point
 # of wiring; only direct imports are forbidden.
 allow_indirect_imports = true

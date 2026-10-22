@@ -1,9 +1,13 @@
 """Application entry point.
 
 `create_app()` is an app factory: it builds a fully wired FastAPI app from
-Settings. Tests call it with their own Settings; uvicorn uses the module-level
-`app` below (`uv run uvicorn app.main:app`).
+Settings. Uvicorn calls it at startup (`uvicorn app.main:create_app --factory`),
+and tests call it with their own Settings and a fake embedding provider.
+Nothing is built at import time, so importing this module has no side effects.
 """
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,18 +15,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.errors import register_error_handlers
 from app.api.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
 from app.api.v1.router import router as v1_router
+from app.application.ports import EmbeddingProvider
 from app.container import Container
 from app.core.config import Settings
 from app.core.logging_config import configure_logging
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    embedding_provider: EmbeddingProvider | None = None,
+) -> FastAPI:
     settings = settings or Settings()
     configure_logging(settings.log_level, settings.log_format)
-    container = Container(settings)
+    container = Container(settings, embedding_provider=embedding_provider)
 
-    app = FastAPI(title="DocuMind API", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+        container.close()
+
+    app = FastAPI(title="DocuMind API", version="0.1.0", lifespan=lifespan)
     app.state.ingest_document = container.ingest_document
+    app.state.compare_texts = container.compare_texts
 
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
@@ -36,6 +51,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_error_handlers(app)
     app.include_router(v1_router)
     return app
-
-
-app = create_app()

@@ -46,3 +46,19 @@ class DocumentParseError(DocuMindError):
     """The file is damaged, password-protected, wrongly encoded, etc."""
 
     code = "malformed_document"
+
+
+class EmbeddingUnavailable(DocuMindError):
+    """The embedding service failed, timed out, or returned something unusable."""
+
+    code = "embedding_unavailable"
+
+
+class EmbeddingRateLimited(EmbeddingUnavailable):
+    """The embedding service is refusing requests because a usage limit was reached."""
+
+    code = "embedding_rate_limited"
+
+    def __init__(self, message: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
