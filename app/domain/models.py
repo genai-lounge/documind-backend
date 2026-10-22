@@ -53,9 +53,47 @@ class ExtractionStatus(StrEnum):
     NO_TEXT = "no_text"
 
 
+Vector = tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class EmbeddingModel:
+    """Identifies the vector space: vectors are only comparable within one model."""
+
+    name: str
+    dimensions: int
+
+
+@dataclass(frozen=True)
+class Chunk:
+    """A piece of one section's text, small enough to retrieve and cite on its own.
+
+    `start_char` and `end_char` locate the chunk within its section's text.
+    """
+
+    index: int
+    page_number: int | None
+    text: str
+    start_char: int
+    end_char: int
+
+    @property
+    def char_count(self) -> int:
+        return len(self.text)
+
+
+@dataclass(frozen=True)
+class EmbeddedChunk:
+    chunk: Chunk
+    vector: Vector
+
+
 @dataclass(frozen=True)
 class Document:
-    """An uploaded document after text extraction."""
+    """An uploaded document after text extraction, chunking, and embedding.
+
+    `embedding_model` is None when there was no text to embed.
+    """
 
     id: str
     filename: str
@@ -63,3 +101,5 @@ class Document:
     size_bytes: int
     status: ExtractionStatus
     content: ParsedContent
+    chunks: tuple[EmbeddedChunk, ...] = ()
+    embedding_model: EmbeddingModel | None = None

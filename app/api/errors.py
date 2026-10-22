@@ -10,6 +10,7 @@ middleware (app/api/middleware.py), which logs them and returns a generic 500.
 """
 
 import logging
+import math
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -19,6 +20,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.domain.errors import (
     DocumentParseError,
     DocuMindError,
+    EmbeddingRateLimited,
+    EmbeddingUnavailable,
     EmptyFile,
     FileTooLarge,
     FileTypeMismatch,
@@ -35,6 +38,7 @@ STATUS_BY_ERROR: dict[type[DocuMindError], int] = {
     UnsupportedFileType: 415,
     FileTypeMismatch: 415,
     DocumentParseError: 422,
+    EmbeddingUnavailable: 503,
 }
 
 CODE_BY_HTTP_STATUS = {404: "not_found", 405: "method_not_allowed"}
@@ -56,7 +60,14 @@ async def _handle_domain_error(request: Request, exc: Exception) -> JSONResponse
     assert isinstance(exc, DocuMindError)
     status = status_for(exc)
     logger.info("request.rejected", extra={"code": exc.code, "status": status})
-    return JSONResponse(status_code=status, content=error_body(exc.code, exc.message))
+    headers = None
+    if isinstance(exc, EmbeddingRateLimited) and exc.retry_after_seconds is not None:
+        headers = {"Retry-After": str(math.ceil(exc.retry_after_seconds))}
+    return JSONResponse(
+        status_code=status,
+        content=error_body(exc.code, exc.message),
+        headers=headers,
+    )
 
 
 async def _handle_validation_error(request: Request, exc: Exception) -> JSONResponse:

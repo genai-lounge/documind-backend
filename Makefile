@@ -1,13 +1,16 @@
 # Shortcuts for common backend tasks. Run `make <target>` from backend/.
 # Each target just runs the uv commands shown, so you can also run them directly.
 
-.PHONY: dev test lint format typecheck arch check
+.PHONY: dev test test-live lint format typecheck arch check
 
 dev:        ## Start the API with auto-reload at http://localhost:8008
-	uv run uvicorn app.main:app --reload --port 8008
+	uv run uvicorn app.main:create_app --factory --reload --port 8008
 
-test:       ## Run all tests
+test:       ## Run all tests except live ones (no API keys needed)
 	uv run pytest
+
+test-live:  ## Run tests against real external services (needs VOYAGE_API_KEY)
+	uv run pytest -m live
 
 lint:       ## Check code style and common mistakes
 	uv run ruff check .
