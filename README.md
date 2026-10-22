@@ -54,6 +54,12 @@ make arch    # import-linter: the architecture's dependency rules
 make test    # pytest
 ```
 
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the same checks on every pull request and on every push to `main`: `uv sync --locked`, then `make lint`, `make typecheck`, `make arch`, and `make test`. If `make check` passes locally, CI should pass too. See [ADR 0008](docs/adr/0008-continuous-integration.md).
+
+To make a failing check **block merging**: on GitHub, open the repository's **Settings → Branches → Add branch protection rule** (or **Rules → Rulesets**) for `main`, enable **Require status checks to pass before merging**, and select **Lint, types, architecture, tests**.
+
 All Python commands go through `uv run`. To add a dependency, use `uv add <pkg>` (or `uv add --dev <pkg>`), not pip.
 
 ## Configuration
