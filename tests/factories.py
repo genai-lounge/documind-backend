@@ -25,7 +25,7 @@ def make_pdf(
     pdf.set_metadata({"title": title, "author": author})
     if password:
         return pdf.tobytes(
-            encryption=pymupdf.PDF_ENCRYPT_AES_256,
+            encryption=pymupdf.mupdf.PDF_ENCRYPT_AES_256,
             user_pw=password,
             owner_pw=password,
         )

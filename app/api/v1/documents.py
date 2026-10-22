@@ -32,7 +32,6 @@ router = APIRouter(prefix="/documents", tags=["documents"])
         422: {"model": ErrorResponse, "description": "File could not be parsed"},
     },
 )
-
 def upload_document(
     file: UploadFile,
     ingest: Annotated[IngestDocument, Depends(get_ingest_document)],
