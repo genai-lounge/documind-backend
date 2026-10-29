@@ -2,7 +2,7 @@
 
 The FastAPI backend for DocuMind, an educational RAG (Retrieval-Augmented Generation) app: upload documents, ask questions, and get Claude-generated answers with source citations you can check. The Next.js frontend lives in a separate repository (`documind-frontend`).
 
-**Current status: Phase 3 (storage and retrieval).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded by a configurable vendor (OpenAI by default, Voyage AI, or FastEmbed), and **stored**: original files on disk, document records in SQLite, and chunk vectors in Chroma (local, or Chroma Cloud). You can list, inspect, and delete documents, and **search them by meaning**. Everything survives a restart. There's no Claude answer generation yet.
+**Current status: Phase 3 (storage and retrieval).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded by a configurable vendor (OpenAI by default, Voyage AI, or FastEmbed), and **stored**: original files on disk or in Supabase Storage, document records in SQLite, and chunk vectors in Chroma (local, or Chroma Cloud). You can list, inspect, and delete documents, and **search them by meaning**. Everything survives a restart. There's no Claude answer generation yet.
 
 - [docs/architecture.md](docs/architecture.md): how the system is designed, with layers, ports, and request flow
 - [docs/adr/](docs/adr/README.md): why it is designed that way (Architecture Decision Records)
@@ -46,6 +46,17 @@ Choose a vendor with `EMBEDDING_PROVIDER` in `backend/.env` (copy `.env.example`
 **Vectors from different vendors or models can't be compared.** Each model gets its own vector collection, so switching provider or model is safe, but documents indexed with the old model aren't searchable until they're uploaded again (they show `searchable: false`).
 
 **Adding a vendor:** write an adapter in `app/infrastructure/embeddings/` (HTTP vendors can reuse `HttpEmbeddingClient` for timeouts, retries, and error handling), add a builder and one entry to `EMBEDDING_PROVIDERS` in `app/embedding_providers.py`, and add it to the contract tests. Nothing else changes.
+
+## File storage setup: local or Supabase
+
+`FILE_STORAGE` chooses where original uploaded files are kept. On upload, the file is saved **before** anything is embedded or written to Chroma; if saving fails, the document is marked `failed` and nothing else is written.
+
+| `FILE_STORAGE` | Needs | Notes |
+|---|---|---|
+| `local` (default) | nothing | `DATA_DIR/uploads/` |
+| `supabase` | `SUPABASE_URL` (Project Settings → API) and `SUPABASE_SECRET_KEY` (Project Settings → API Keys → secret key, `sb_secret_...`; the legacy `service_role` key also works) | Files go to a **private** bucket, `SUPABASE_BUCKET` (default `documents`), which the backend **creates at startup if it's missing** |
+
+The secret key bypasses Supabase's row-level security: keep it **only in `backend/.env`**, never in the frontend. On Supabase's free plan a project pauses after about a week of inactivity; the backend then refuses to start with a clear message until you resume it in the dashboard. Switching `FILE_STORAGE` doesn't move existing files. Tests and CI always use local storage; `make test-live` includes one tiny upload/overwrite/delete in your bucket when `FILE_STORAGE=supabase`.
 
 ## Vector store setup: local or Chroma Cloud
 
@@ -132,6 +143,10 @@ Settings are read from environment variables and from `backend/.env` (loaded aut
 | `EMBEDDING_TIMEOUT_SECONDS` | `30` | Read timeout per HTTP request |
 | `EMBEDDING_MAX_RETRIES` | `3` | Retries on rate limits, server errors, and timeouts (0–10) |
 | `DATA_DIR` | `backend/data` | Where files, the SQLite database, and local Chroma are stored |
+| `FILE_STORAGE` | `local` | `local` (disk) or `supabase` (Supabase Storage) |
+| `SUPABASE_URL` | none | Required when `FILE_STORAGE=supabase`, e.g. `https://abcd.supabase.co` |
+| `SUPABASE_SECRET_KEY` | none | Required when `FILE_STORAGE=supabase`; backend only |
+| `SUPABASE_BUCKET` | `documents` | Private bucket for uploads; created if missing |
 | `CHROMA_MODE` | `local` | `local` (embedded, on disk) or `cloud` (Chroma Cloud) |
 | `CHROMA_API_KEY` | none | Required when `CHROMA_MODE=cloud` |
 | `CHROMA_TENANT` / `CHROMA_DATABASE` | from the key | Only needed when the key covers several databases |
@@ -159,7 +174,7 @@ Each embedding call logs `embedding.completed` with the provider, model, batch c
 ## Known limitations (Phase 3)
 
 - **Changing the embedding provider or model** puts new documents in a separate vector collection; documents indexed with the old model show `searchable: false` and must be deleted and uploaded again (automatic re-indexing is planned for Phase 7).
-- **One server process with local Chroma** (embedded in the app). With `CHROMA_MODE=cloud`, several instances can share the vectors, but document records (SQLite) and files (local disk) are still per machine; Postgres and S3/R2 adapters would complete that.
+- **One server process with local Chroma** (embedded in the app). With `CHROMA_MODE=cloud`, several instances can share the vectors, and with `FILE_STORAGE=supabase` so can the files, but document records (SQLite) are still per machine; a Postgres adapter (for example Supabase's database) would complete that.
 - Switching `CHROMA_MODE` doesn't migrate vectors; upload documents again.
 - **No transactions across stores**: if the server crashes mid-upload, a record can stay `processing`. Repair and retries come in Phase 7.
 - Uploads wait for embedding and indexing to finish (background processing in Phase 7).

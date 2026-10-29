@@ -136,10 +136,13 @@ class WordOverlapEmbeddingProvider(EmbeddingProvider):
 
 
 class InMemoryFileStorage(FileStorage):
-    def __init__(self) -> None:
+    def __init__(self, fail_on_save: Exception | None = None) -> None:
         self.files: dict[str, bytes] = {}
+        self.fail_on_save = fail_on_save
 
     def save(self, key: str, data: bytes) -> None:
+        if self.fail_on_save:
+            raise self.fail_on_save
         self.files[key] = data
 
     def delete(self, key: str) -> None:

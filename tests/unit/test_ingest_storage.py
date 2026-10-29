@@ -32,8 +32,9 @@ class Setup:
         parser: FakeParser | None = None,
         embedder: FakeEmbeddingProvider | None = None,
         vectors: InMemoryVectorStore | None = None,
+        files: InMemoryFileStorage | None = None,
     ) -> None:
-        self.files = InMemoryFileStorage()
+        self.files = files or InMemoryFileStorage()
         self.documents = InMemoryDocumentRepository()
         self.vectors = vectors or InMemoryVectorStore()
         self.embedder = embedder or FakeEmbeddingProvider()
@@ -150,3 +151,17 @@ def test_unexpected_errors_are_recorded_as_internal_errors() -> None:
     record = s.documents.get("doc1")
     assert record is not None
     assert record.error_code == "internal_error"
+
+
+def test_file_storage_failure_stops_before_embedding_or_indexing() -> None:
+    s = Setup(files=InMemoryFileStorage(fail_on_save=StorageUnavailable("down")))
+
+    with pytest.raises(StorageUnavailable):
+        s.ingest()
+
+    record = s.documents.get("doc1")
+    assert record is not None
+    assert record.status is DocumentStatus.FAILED
+    assert record.error_code == "storage_unavailable"
+    assert s.embedder.calls == []
+    assert s.vectors.count(s.embedder.model) == 0
