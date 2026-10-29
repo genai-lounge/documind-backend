@@ -5,14 +5,29 @@ import logging
 
 import pytest
 
-from app.domain.answers import CitedSpan, EvidencePassage
+from app.domain.answers import (
+    BlockEnd,
+    ChatTurn,
+    CitationClaim,
+    CitedSpan,
+    EvidencePassage,
+    LLMEvent,
+    TextChunk,
+)
 from app.domain.errors import AnswerRefused, LLMRateLimited, LLMUnavailable
 from app.infrastructure.llm.claude_llm_provider import (
     MISCONFIGURED,
     REJECTED,
     SYSTEM_PROMPT,
 )
-from tests.fake_anthropic import API_KEY, FakeAnthropic, cited_text, error, message
+from tests.fake_anthropic import (
+    API_KEY,
+    FakeAnthropic,
+    cited_text,
+    error,
+    interrupted,
+    message,
+)
 
 EVIDENCE = [
     EvidencePassage("doc1:0", "finance.txt · page 1", "Revenue grew 12% in Q3."),
@@ -42,7 +57,29 @@ def test_sends_passages_as_search_results_then_the_question() -> None:
     }
     assert content[1]["source"] == "doc2:3"
     assert content[-1] == {"type": "text", "text": "How much did revenue grow?"}
+    assert request["stream"] is True
     assert api.headers[0]["x-api-key"] == API_KEY
+
+
+def test_sends_earlier_turns_as_plain_conversation_before_the_evidence() -> None:
+    api = FakeAnthropic()
+    history = [
+        ChatTurn("How much did revenue grow?", "Revenue grew 12%.[1] It was Q3.[1][2]"),
+        ChatTurn("And the cat?", "The cat is Biscuit.[2]"),
+    ]
+
+    api.provider().answer("Who named it?", EVIDENCE, history)
+
+    messages = api.requests[0]["messages"]
+    assert [(m["role"], m["content"]) for m in messages[:4]] == [
+        ("user", "How much did revenue grow?"),
+        ("assistant", "Revenue grew 12%. It was Q3."),
+        ("user", "And the cat?"),
+        ("assistant", "The cat is Biscuit."),
+    ]
+    assert messages[4]["role"] == "user"
+    assert messages[4]["content"][0]["type"] == "search_result"
+    assert messages[4]["content"][-1] == {"type": "text", "text": "Who named it?"}
 
 
 def test_system_prompt_guards_against_instructions_inside_documents() -> None:
@@ -89,6 +126,46 @@ def test_reads_text_and_citations_and_skips_thinking() -> None:
     ]
     assert answer.segments[0].cited == (CitedSpan(0, "Revenue grew 12% in Q3."),)
     assert answer.segments[1].cited == ()
+
+
+def test_streams_citations_then_text_in_pieces_then_the_block_end() -> None:
+    api = FakeAnthropic(
+        [message([cited_text("Revenue grew 12%.", 0, "Revenue grew 12% in Q3.")])]
+    )
+
+    events = list(api.provider().stream_answer("q", EVIDENCE))
+
+    assert events == [
+        CitationClaim(CitedSpan(0, "Revenue grew 12% in Q3.")),
+        TextChunk("Revenue "),
+        TextChunk("grew 12%."),
+        BlockEnd(),
+    ]
+
+
+def test_an_error_in_the_middle_of_the_stream_is_unavailable_and_closes_it() -> None:
+    api = FakeAnthropic(
+        [
+            interrupted(
+                message([cited_text("Revenue grew.", 0, "Revenue grew 12% in Q3.")])
+            )
+        ]
+    )
+    stream = api.provider().stream_answer("q", EVIDENCE)
+    received: list[LLMEvent] = []
+
+    with pytest.raises(LLMUnavailable):
+        received.extend(stream)
+
+    assert received == [CitationClaim(CitedSpan(0, "Revenue grew 12% in Q3."))]
+    stream.close()
+
+
+def test_errors_opening_the_stream_are_raised_by_stream_answer() -> None:
+    api = FakeAnthropic([error(401, "authentication_error")])
+
+    with pytest.raises(LLMUnavailable):
+        api.provider().stream_answer("q", EVIDENCE)
 
 
 def test_refusal_becomes_answer_refused() -> None:

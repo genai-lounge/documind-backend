@@ -2,7 +2,7 @@
 
 The FastAPI backend for DocuMind, an educational RAG (Retrieval-Augmented Generation) app: upload documents, ask questions, and get Claude-generated answers with source citations you can check. The Next.js frontend lives in a separate repository (`documind-frontend`).
 
-**Current status: Phase 4 (answers with Claude).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded (OpenAI by default, Voyage AI, or FastEmbed), and stored (files on disk or in Supabase Storage, records in SQLite, vectors in Chroma local or Chroma Cloud). You can **ask questions**: the closest passages are retrieved and Claude answers from them only, with citations that are checked against the passages actually retrieved; when the documents don't answer the question, it says so.
+**Current status: Phase 5 (streaming chat).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded (OpenAI by default, Voyage AI, or FastEmbed), and stored (files on disk or in Supabase Storage, records in SQLite, vectors in Chroma local or Chroma Cloud). You can **ask questions**: the closest passages are retrieved and Claude answers from them only, with citations that are checked against the passages actually retrieved; when the documents don't answer the question, it says so. Answers **stream** as server-sent events, and **follow-up questions** use the last 3 exchanges as context.
 
 - [docs/architecture.md](docs/architecture.md): how the system is designed, with layers, ports, and request flow
 - [docs/adr/](docs/adr/README.md): why it is designed that way (Architecture Decision Records)
@@ -108,9 +108,24 @@ make dev     # start the API at http://localhost:8008
 | DELETE | `/api/v1/documents/{id}` | Remove the document's vectors, file, and record (204; 404 if unknown) |
 | POST | `/api/v1/retrieval/search` | `{"query", "top_k"}`: the closest chunks, with rank, score, file, and page |
 | POST | `/api/v1/embeddings/similarity` | Compare two texts |
-| POST | `/api/v1/chat` | `{"question"}`: Claude's answer with `[n]` citation markers, the checked `citations`, every retrieved passage (`sources`), and `insufficient_evidence` |
+| POST | `/api/v1/chat` | `{"question", "history"}`: Claude's whole answer with `[n]` citation markers, the checked `citations`, every retrieved passage (`sources`), and `insufficient_evidence` |
+| POST | `/api/v1/chat/stream` | Same request; the answer as server-sent events while it is written (see below) |
 
 Ask from the command line: `curl -H "Content-Type: application/json" -d '{"question":"How many vacation days do employees get?"}' http://localhost:8008/api/v1/chat`
+
+Watch an answer stream (`-N` turns off curl's buffering): `curl -N -H "Content-Type: application/json" -d '{"question":"How many vacation days do employees get?"}' http://localhost:8008/api/v1/chat/stream`
+
+The stream sends these events, in this order:
+
+| Event | Data |
+|---|---|
+| `sources` | Every passage given to the model (sent first) |
+| `citation` | A checked citation, sent when its number first appears |
+| `delta` | `{"text"}`: the next piece of the answer, including `[n]` markers |
+| `done` | `{"insufficient_evidence", "model"}` |
+| `error` | `{"code", "message"}`: only if something fails after streaming started (earlier failures are normal HTTP errors) |
+
+`history` is a list of earlier `{"question", "answer"}` turns (up to 10; the server uses the last 3). The follow-up is searched together with the previous question, so "How do I request them?" still finds the vacation passages. Closing the connection stops Claude immediately. See [ADR 0016](docs/adr/0016-streaming-chat.md).
 
 Search from the command line: `curl -H "Content-Type: application/json" -d '{"query":"How much did revenue grow?","top_k":3}' http://localhost:8008/api/v1/retrieval/search`
 
@@ -192,13 +207,13 @@ A document whose indexing failed stays in the library with status `failed` and a
 
 Each embedding call logs `embedding.completed` with the provider, model, batch count, `total_tokens` (what hosted vendors bill), and duration. Document text and the key are never logged.
 
-## Known limitations (Phase 4)
+## Known limitations (Phase 5)
 
 - **Changing the embedding provider or model** puts new documents in a separate vector collection; documents indexed with the old model show `searchable: false` and must be deleted and uploaded again (automatic re-indexing is planned for Phase 7).
 - **One server process with local Chroma** (embedded in the app). With `CHROMA_MODE=cloud`, several instances can share the vectors, and with `FILE_STORAGE=supabase` so can the files, but document records (SQLite) are still per machine; a Postgres adapter (for example Supabase's database) would complete that.
 - Switching `CHROMA_MODE` doesn't migrate vectors; upload documents again.
 - **No transactions across stores**: if the server crashes mid-upload, a record can stay `processing`. Repair and retries come in Phase 7.
-- Answers are single questions: no conversation history or follow-ups yet, and the answer arrives all at once rather than streaming (Phase 5).
+- The server stores no conversations: the client sends recent turns with each question. Follow-ups are found by searching with the previous question added, not by rewriting the question.
 - Each question costs one embedding call plus one Claude call; with Claude Haiku 5.5 a typical question costs well under a cent.
 - Uploads wait for embedding and indexing to finish (background processing in Phase 7).
 - Chunks never span pages; the last chunk on a page is often mostly overlap; sizes are counted in characters, not tokens.

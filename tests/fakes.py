@@ -8,7 +8,7 @@ test only the use case's own logic.
 import hashlib
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from app.application.ports import (
     Chunker,
@@ -16,6 +16,7 @@ from app.application.ports import (
     DocumentRepository,
     EmbeddingProvider,
     FileStorage,
+    LLMAnswerStream,
     LLMProvider,
     VectorIndexReader,
     VectorIndexWriter,
@@ -23,9 +24,13 @@ from app.application.ports import (
 )
 from app.domain.answers import (
     AnswerSegment,
+    BlockEnd,
+    ChatTurn,
+    CitationClaim,
     CitedSpan,
     EvidencePassage,
-    GeneratedAnswer,
+    LLMEvent,
+    TextChunk,
 )
 from app.domain.models import (
     Chunk,
@@ -240,8 +245,9 @@ class InMemoryVectorStore(VectorIndexWriter, VectorSearcher, VectorIndexReader):
 class FakeLLMProvider(LLMProvider):
     """Answers from the first passage and cites it correctly, unless told otherwise.
 
-    `segments` replaces the answer (e.g. to cite a passage that wasn't sent);
-    `error` is raised instead of answering. Every call is recorded.
+    `segments` replaces the answer (e.g. to cite a passage that wasn't sent).
+    `error` is raised when the stream opens; `error_after` is raised once that
+    many events have been streamed. Every call and every stream is recorded.
     """
 
     model_name = "fake-llm"
@@ -250,26 +256,71 @@ class FakeLLMProvider(LLMProvider):
         self,
         segments: Sequence[AnswerSegment] | None = None,
         error: Exception | None = None,
+        error_after: tuple[int, Exception] | None = None,
     ) -> None:
         self.segments = segments
         self.error = error
-        self.calls: list[tuple[str, list[EvidencePassage]]] = []
+        self.error_after = error_after
+        self.calls: list[tuple[str, list[EvidencePassage], list[ChatTurn]]] = []
+        self.streams: list[FakeAnswerStream] = []
 
-    def answer(
-        self, question: str, evidence: Sequence[EvidencePassage]
-    ) -> GeneratedAnswer:
-        self.calls.append((question, list(evidence)))
+    def stream_answer(
+        self,
+        question: str,
+        evidence: Sequence[EvidencePassage],
+        history: Sequence[ChatTurn] = (),
+    ) -> LLMAnswerStream:
+        self.calls.append((question, list(evidence), list(history)))
         if self.error:
             raise self.error
-        if self.segments is not None:
-            return GeneratedAnswer(segments=tuple(self.segments), model=self.model_name)
-        first = evidence[0]
-        return GeneratedAnswer(
-            segments=(
+        segments = self.segments
+        if segments is None:
+            first = evidence[0]
+            segments = (
                 AnswerSegment(
                     f"According to {first.title}, the answer is given.",
                     (CitedSpan(0, first.text),),
                 ),
-            ),
-            model=self.model_name,
-        )
+            )
+        stream = FakeAnswerStream(self.model_name, _events(segments), self.error_after)
+        self.streams.append(stream)
+        return stream
+
+
+class FakeAnswerStream(LLMAnswerStream):
+    def __init__(
+        self,
+        model: str,
+        events: list[LLMEvent],
+        error_after: tuple[int, Exception] | None,
+    ) -> None:
+        self.model = model
+        self.events = events
+        self.error_after = error_after
+        self.yielded = 0
+        self.closed = False
+
+    def __iter__(self) -> Iterator[LLMEvent]:
+        try:
+            for event in self.events:
+                if self.error_after and self.yielded == self.error_after[0]:
+                    raise self.error_after[1]
+                self.yielded += 1
+                yield event
+            if self.error_after and self.yielded == self.error_after[0]:
+                raise self.error_after[1]
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _events(segments: Sequence[AnswerSegment]) -> list[LLMEvent]:
+    """Like Claude: a segment's citations arrive before its text, then the block ends."""
+    events: list[LLMEvent] = []
+    for segment in segments:
+        events.extend(CitationClaim(span) for span in segment.cited)
+        events.append(TextChunk(segment.text))
+        events.append(BlockEnd())
+    return events

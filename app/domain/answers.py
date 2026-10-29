@@ -65,3 +65,54 @@ class Answer:
     insufficient_evidence: bool
     model: str | None
     retrieved: tuple[SearchHit, ...]
+
+
+@dataclass(frozen=True)
+class ChatTurn:
+    """An earlier question and answer in the same conversation (context, never evidence)."""
+
+    question: str
+    answer: str
+
+
+# --- What a language model emits while streaming (unchecked) ---
+
+
+@dataclass(frozen=True)
+class TextChunk:
+    text: str
+
+
+@dataclass(frozen=True)
+class CitationClaim:
+    span: CitedSpan
+
+
+@dataclass(frozen=True)
+class BlockEnd:
+    """The end of a run of text that the claims since the previous BlockEnd refer to."""
+
+
+LLMEvent = TextChunk | CitationClaim | BlockEnd
+
+
+# --- What DocuMind streams to clients (checked) ---
+
+
+@dataclass(frozen=True)
+class AnswerTextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class AnswerCitationAdded:
+    citation: Citation
+
+
+@dataclass(frozen=True)
+class AnswerDone:
+    insufficient_evidence: bool
+    model: str | None
+
+
+AnswerEvent = AnswerTextDelta | AnswerCitationAdded | AnswerDone
