@@ -7,14 +7,22 @@ app/infrastructure/ and are plugged in by the composition root
 depend on these abstractions, and the vendor code depends on them too.
 
 Ports are kept small (Interface Segregation): a caller only depends on the
-methods it actually uses. Later phases add ports such as FileStorage,
-VectorStore, and LLMProvider.
+methods it actually uses. Phase 4 adds an LLMProvider.
 """
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from app.domain.models import Chunk, EmbeddingModel, ParsedContent, Section, Vector
+from app.domain.models import (
+    Chunk,
+    DocumentRecord,
+    EmbeddedChunk,
+    EmbeddingModel,
+    ParsedContent,
+    SearchHit,
+    Section,
+    Vector,
+)
 
 
 class DocumentParser(ABC):
@@ -76,3 +84,84 @@ class EmbeddingProvider(ABC):
 
     @abstractmethod
     def embed_query(self, text: str) -> Vector: ...
+
+
+class FileStorage(ABC):
+    """Keeps original uploaded files. Keys are simple names chosen by the app.
+
+    Contract: `save` overwrites an existing key; `delete` of a missing key is a no-op.
+    Failures raise StorageUnavailable.
+    """
+
+    @abstractmethod
+    def save(self, key: str, data: bytes) -> None: ...
+
+    @abstractmethod
+    def delete(self, key: str) -> None: ...
+
+
+class DocumentRepository(ABC):
+    """Stores one DocumentRecord per document.
+
+    Contract: `list` returns newest first; `delete` of a missing id is a no-op.
+    Failures raise StorageUnavailable.
+    """
+
+    @abstractmethod
+    def add(self, record: DocumentRecord) -> None: ...
+
+    @abstractmethod
+    def update(self, record: DocumentRecord) -> None: ...
+
+    @abstractmethod
+    def get(self, document_id: str) -> DocumentRecord | None: ...
+
+    @abstractmethod
+    def list(self) -> list[DocumentRecord]: ...
+
+    @abstractmethod
+    def delete(self, document_id: str) -> None: ...
+
+
+class VectorIndexWriter(ABC):
+    """Adds and removes a document's chunk vectors.
+
+    Every call names the embedding model, and vectors of different models are
+    kept apart, so they can never be compared by mistake.
+    Contract: `upsert` replaces chunks with the same index; `delete_document`
+    of an unknown document is a no-op. Failures raise StorageUnavailable.
+    """
+
+    @abstractmethod
+    def upsert(
+        self,
+        model: EmbeddingModel,
+        document_id: str,
+        filename: str,
+        chunks: Sequence[EmbeddedChunk],
+    ) -> None: ...
+
+    @abstractmethod
+    def delete_document(self, model: EmbeddingModel, document_id: str) -> None: ...
+
+
+class VectorSearcher(ABC):
+    """Finds the chunks whose vectors are closest to a query vector.
+
+    Contract: at most `top_k` hits, best first, ranked from 1, with scores
+    from -1 to 1 (cosine similarity). Failures raise StorageUnavailable.
+    """
+
+    @abstractmethod
+    def search(
+        self, model: EmbeddingModel, vector: Vector, top_k: int
+    ) -> list[SearchHit]: ...
+
+
+class VectorIndexReader(ABC):
+    """Reads back a document's stored chunks (text and position, no vectors)."""
+
+    @abstractmethod
+    def document_chunks(
+        self, model: EmbeddingModel, document_id: str
+    ) -> list[Chunk]: ...

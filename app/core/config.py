@@ -36,6 +36,17 @@ class Settings(BaseSettings):
 
     max_upload_size_mb: int = Field(default=10, gt=0, le=1024)
 
+    data_dir: Path = BACKEND_DIR / "data"
+
+    chroma_mode: Literal["local", "cloud"] = "local"
+    chroma_api_key: SecretStr | None = None
+    chroma_tenant: str | None = None
+    chroma_database: str | None = None
+    chroma_cloud_host: str = "api.trychroma.com"
+
+    search_default_top_k: int = Field(default=5, ge=1, le=100)
+    search_max_top_k: int = Field(default=20, ge=1, le=100)
+
     chunk_size: int = Field(default=800, ge=100, le=8000)
     chunk_overlap: int = Field(default=150, ge=0)
 
@@ -67,6 +78,24 @@ class Settings(BaseSettings):
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
         return self
+
+    @model_validator(mode="after")
+    def _default_top_k_within_max(self) -> "Settings":
+        if self.search_default_top_k > self.search_max_top_k:
+            raise ValueError("SEARCH_DEFAULT_TOP_K must not exceed SEARCH_MAX_TOP_K")
+        return self
+
+    @property
+    def uploads_dir(self) -> Path:
+        return self.data_dir / "uploads"
+
+    @property
+    def chroma_dir(self) -> Path:
+        return self.data_dir / "chroma"
+
+    @property
+    def database_path(self) -> Path:
+        return self.data_dir / "documind.db"
 
     @property
     def max_upload_size_bytes(self) -> int:

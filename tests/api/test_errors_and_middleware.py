@@ -44,7 +44,7 @@ def test_unknown_route_uses_standard_error_shape(client: TestClient) -> None:
 
 
 def test_wrong_method_uses_standard_error_shape(client: TestClient) -> None:
-    response = client.get(URL)
+    response = client.put(URL)
 
     assert response.status_code == 405
     assert response.json()["detail"]["code"] == "method_not_allowed"

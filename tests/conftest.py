@@ -1,5 +1,16 @@
 """Shared pytest fixtures (pytest finds this file automatically)."""
 
+import atexit
+import os
+import shutil
+import tempfile
+
+# Before any test module is imported: point DATA_DIR at a throwaway folder so
+# no test can ever touch the real backend/data (your database and vectors).
+_TEST_DATA_DIR = tempfile.mkdtemp(prefix="documind-tests-")
+os.environ["DATA_DIR"] = _TEST_DATA_DIR
+atexit.register(shutil.rmtree, _TEST_DATA_DIR, ignore_errors=True)
+
 import pytest
 
 from app.core.config import Settings

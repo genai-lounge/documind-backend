@@ -12,8 +12,10 @@ from typing import Protocol, runtime_checkable
 
 from app.application.compare_texts import CompareTexts
 from app.application.ingest_document import IngestDocument
+from app.application.manage_documents import DeleteDocument, GetDocument, ListDocuments
 from app.application.parser_registry import ParserRegistry
 from app.application.ports import EmbeddingProvider
+from app.application.search_chunks import SearchChunks
 from app.application.validating_embedding_provider import ValidatingEmbeddingProvider
 from app.core.config import Settings
 from app.embedding_providers import build_embedding_provider
@@ -23,6 +25,11 @@ from app.infrastructure.chunking.recursive_character_chunker import (
 from app.infrastructure.parsing.plain_text_parser import PlainTextParser
 from app.infrastructure.parsing.pymupdf_parser import PyMuPdfParser
 from app.infrastructure.parsing.python_docx_parser import PythonDocxParser
+from app.infrastructure.storage.local_file_storage import LocalFileStorage
+from app.infrastructure.storage.sqlite_document_repository import (
+    SqliteDocumentRepository,
+)
+from app.vector_stores import build_vector_store
 
 
 @runtime_checkable
@@ -51,11 +58,31 @@ class Container:
         )
         self.embedding_provider = ValidatingEmbeddingProvider(self._vendor_provider)
 
+        self.files = LocalFileStorage(settings.uploads_dir)
+        self.documents = SqliteDocumentRepository(settings.database_path)
+        self.vector_store = build_vector_store(settings)
+
         self.ingest_document = IngestDocument(
             parsers=self.parser_registry,
             chunker=self.chunker,
             embedder=self.embedding_provider,
+            files=self.files,
+            documents=self.documents,
+            vectors=self.vector_store,
             max_upload_bytes=settings.max_upload_size_bytes,
+        )
+        self.list_documents = ListDocuments(self.documents, self.embedding_provider)
+        self.get_document = GetDocument(
+            self.documents, self.vector_store, self.embedding_provider
+        )
+        self.delete_document = DeleteDocument(
+            self.documents, self.files, self.vector_store
+        )
+        self.search_chunks = SearchChunks(
+            embedder=self.embedding_provider,
+            searcher=self.vector_store,
+            default_top_k=settings.search_default_top_k,
+            max_top_k=settings.search_max_top_k,
         )
         self.compare_texts = CompareTexts(embedder=self.embedding_provider)
 

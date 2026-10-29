@@ -38,12 +38,16 @@ def create_app(
     app = FastAPI(title="DocuMind API", version="0.1.0", lifespan=lifespan)
     app.state.ingest_document = container.ingest_document
     app.state.compare_texts = container.compare_texts
+    app.state.list_documents = container.list_documents
+    app.state.get_document = container.get_document
+    app.state.delete_document = container.delete_document
+    app.state.search_chunks = container.search_chunks
 
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
         expose_headers=[REQUEST_ID_HEADER],
     )

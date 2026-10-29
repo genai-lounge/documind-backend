@@ -14,6 +14,8 @@ from fastapi import Request
 
 from app.application.compare_texts import CompareTexts
 from app.application.ingest_document import IngestDocument
+from app.application.manage_documents import DeleteDocument, GetDocument, ListDocuments
+from app.application.search_chunks import SearchChunks
 
 
 def get_ingest_document(request: Request) -> IngestDocument:
@@ -23,4 +25,24 @@ def get_ingest_document(request: Request) -> IngestDocument:
 
 def get_compare_texts(request: Request) -> CompareTexts:
     use_case: CompareTexts = request.app.state.compare_texts
+    return use_case
+
+
+def get_list_documents(request: Request) -> ListDocuments:
+    use_case: ListDocuments = request.app.state.list_documents
+    return use_case
+
+
+def get_get_document(request: Request) -> GetDocument:
+    use_case: GetDocument = request.app.state.get_document
+    return use_case
+
+
+def get_delete_document(request: Request) -> DeleteDocument:
+    use_case: DeleteDocument = request.app.state.delete_document
+    return use_case
+
+
+def get_search_chunks(request: Request) -> SearchChunks:
+    use_case: SearchChunks = request.app.state.search_chunks
     return use_case

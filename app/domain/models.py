@@ -9,6 +9,7 @@ accident after it is created.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -103,3 +104,54 @@ class Document:
     content: ParsedContent
     chunks: tuple[EmbeddedChunk, ...] = ()
     embedding_model: EmbeddingModel | None = None
+
+
+class DocumentStatus(StrEnum):
+    """Where a stored document is in its lifecycle."""
+
+    PROCESSING = "processing"
+    INDEXED = "indexed"
+    NO_TEXT = "no_text"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class DocumentRecord:
+    """What the app remembers about a stored document (not its text or vectors).
+
+    `error_code` is set when status is FAILED. `embedding_model` is the model
+    the chunks were embedded with; it decides which vector collection they live in.
+    """
+
+    id: str
+    filename: str
+    file_type: str
+    size_bytes: int
+    status: DocumentStatus
+    created_at: datetime
+    page_count: int | None = None
+    chunk_count: int = 0
+    embedding_model: EmbeddingModel | None = None
+    error_code: str | None = None
+
+    @property
+    def file_key(self) -> str:
+        """Name of the stored original file, e.g. "3f2a....pdf"."""
+        return f"{self.id}.{self.file_type}"
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """One retrieved chunk. `score` is cosine similarity: it ranks results,
+    it is not a probability of relevance."""
+
+    rank: int
+    score: float
+    document_id: str
+    filename: str
+    chunk: Chunk
+
+
+def chunk_id(document_id: str, chunk_index: int) -> str:
+    """Stable ID for a stored chunk, so re-indexing replaces instead of duplicating."""
+    return f"{document_id}:{chunk_index}"

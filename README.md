@@ -2,7 +2,7 @@
 
 The FastAPI backend for DocuMind, an educational RAG (Retrieval-Augmented Generation) app: upload documents, ask questions, and get Claude-generated answers with source citations you can check. The Next.js frontend lives in a separate repository (`documind-frontend`).
 
-**Current status: Phase 2 (chunking and embeddings).** Uploaded PDF, DOCX, and TXT files are extracted, split into chunks, and each chunk is embedded by a configurable vendor: OpenAI (default), Voyage AI, or FastEmbed (local). A similarity endpoint compares any two texts. Nothing is stored yet, and there's no search or Claude functionality.
+**Current status: Phase 3 (storage and retrieval).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded by a configurable vendor (OpenAI by default, Voyage AI, or FastEmbed), and **stored**: original files on disk, document records in SQLite, and chunk vectors in Chroma (local, or Chroma Cloud). You can list, inspect, and delete documents, and **search them by meaning**. Everything survives a restart. There's no Claude answer generation yet.
 
 - [docs/architecture.md](docs/architecture.md): how the system is designed, with layers, ports, and request flow
 - [docs/adr/](docs/adr/README.md): why it is designed that way (Architecture Decision Records)
@@ -21,7 +21,8 @@ backend/
 │   ├── container.py      composition root: wires adapters into use cases
 │   └── main.py           create_app() factory and the uvicorn entry point
 ├── tests/                unit/ · contract/ · integration/ · api/ · live/
-├── data/                 runtime data (uploads, Chroma); contents are git-ignored
+├── data/                 runtime data, git-ignored: uploads/ (original files),
+│                         documind.db (SQLite records), chroma/ (vectors), models/ (FastEmbed)
 └── docs/                 architecture, ADRs, product spec
 ```
 
@@ -42,9 +43,22 @@ Choose a vendor with `EMBEDDING_PROVIDER` in `backend/.env` (copy `.env.example`
 
 `.env` is git-ignored; keys are never logged or sent to the browser.
 
-**Vectors from different vendors or models can't be compared.** Changing provider or model is fine now (nothing is stored yet); from Phase 3 it will require re-embedding stored documents.
+**Vectors from different vendors or models can't be compared.** Each model gets its own vector collection, so switching provider or model is safe, but documents indexed with the old model aren't searchable until they're uploaded again (they show `searchable: false`).
 
 **Adding a vendor:** write an adapter in `app/infrastructure/embeddings/` (HTTP vendors can reuse `HttpEmbeddingClient` for timeouts, retries, and error handling), add a builder and one entry to `EMBEDDING_PROVIDERS` in `app/embedding_providers.py`, and add it to the contract tests. Nothing else changes.
+
+## Vector store setup: local or Chroma Cloud
+
+`CHROMA_MODE` chooses where chunk vectors are stored. Upload, search, and delete work the same either way.
+
+| `CHROMA_MODE` | Needs | Notes |
+|---|---|---|
+| `local` (default) | nothing | Embedded Chroma in `DATA_DIR/chroma/`; no network or key; one server process |
+| `cloud` | `CHROMA_API_KEY` from your [Chroma Cloud](https://www.trychroma.com) dashboard; `CHROMA_TENANT` and `CHROMA_DATABASE` only if the key covers more than one database | Managed, shared by several server instances. The connection is checked at startup, so bad credentials stop the server with a clear message |
+
+With Chroma Cloud, **chunk text and vectors are stored on Chroma's servers** and every write, search, and stored gigabyte is billed against your Chroma credits. Use test documents until you're comfortable with that. Tests and CI always use local Chroma, so they never touch your account; `make test-live` includes one small Chroma Cloud round trip (a throwaway collection, deleted afterwards) when `CHROMA_MODE=cloud`.
+
+Switching mode doesn't copy data: vectors stored in one place aren't visible in the other, so upload documents again after switching.
 
 ## Run
 
@@ -59,6 +73,19 @@ make dev     # start the API at http://localhost:8008
 - Interactive API docs: http://localhost:8008/docs
 - Upload: `curl -F "file=@/path/to/report.pdf" http://localhost:8008/api/v1/documents`
 - Compare two texts: `curl -H "Content-Type: application/json" -d '{"text_a":"car","text_b":"automobile"}' http://localhost:8008/api/v1/embeddings/similarity`
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/documents` | Upload: extract, chunk, embed, store, and index (`index_status` in the response) |
+| GET | `/api/v1/documents` | Library: every document with status, chunk count, and embedding model |
+| GET | `/api/v1/documents/{id}` | One document with its stored chunks |
+| DELETE | `/api/v1/documents/{id}` | Remove the document's vectors, file, and record (204; 404 if unknown) |
+| POST | `/api/v1/retrieval/search` | `{"query", "top_k"}`: the closest chunks, with rank, score, file, and page |
+| POST | `/api/v1/embeddings/similarity` | Compare two texts |
+
+Search from the command line: `curl -H "Content-Type: application/json" -d '{"query":"How much did revenue grow?","top_k":3}' http://localhost:8008/api/v1/retrieval/search`
+
+The score is cosine similarity: it ranks results; it is **not** the probability that a passage answers the question.
 
 The frontend runs at http://localhost:3008.
 
@@ -104,6 +131,12 @@ Settings are read from environment variables and from `backend/.env` (loaded aut
 | `EMBEDDING_BATCH_SIZE` | `128` | Texts per request or model run (1–1000) |
 | `EMBEDDING_TIMEOUT_SECONDS` | `30` | Read timeout per HTTP request |
 | `EMBEDDING_MAX_RETRIES` | `3` | Retries on rate limits, server errors, and timeouts (0–10) |
+| `DATA_DIR` | `backend/data` | Where files, the SQLite database, and local Chroma are stored |
+| `CHROMA_MODE` | `local` | `local` (embedded, on disk) or `cloud` (Chroma Cloud) |
+| `CHROMA_API_KEY` | none | Required when `CHROMA_MODE=cloud` |
+| `CHROMA_TENANT` / `CHROMA_DATABASE` | from the key | Only needed when the key covers several databases |
+| `SEARCH_DEFAULT_TOP_K` | `5` | Results returned when `top_k` isn't given |
+| `SEARCH_MAX_TOP_K` | `20` | Largest `top_k` a search may ask for |
 | `CHUNK_SIZE` | `800` | Maximum characters per chunk (100–8000) |
 | `CHUNK_OVERLAP` | `150` | Approximate characters shared by neighbouring chunks (less than `CHUNK_SIZE`) |
 
@@ -117,18 +150,19 @@ Every response includes an `X-Request-ID` header, and every log line includes th
 |---|---|---|
 | `embedding_rate_limited` | The vendor's per-minute limit was reached, even after retries | Wait a minute; for Voyage, add a payment method to raise the limits |
 | `embedding_unavailable` | The vendor failed, timed out, rejected the key, or replied unexpectedly | Check the backend log for the request's ID: `embedding.unauthorized` means check the vendor's API key |
+| `storage_unavailable` | The file store, SQLite, or Chroma failed | Check the log for `file_storage.*`, `document_store.failed`, or `vector_store.failed`, and that `DATA_DIR` is writable |
+
+A document whose indexing failed stays in the library with status `failed` and an `error_code`, so failures are never silent. Its original file is kept. Delete it and upload again.
 
 Each embedding call logs `embedding.completed` with the provider, model, batch count, `total_tokens` (what hosted vendors bill), and duration. Document text and the key are never logged.
 
-## Known limitations (Phase 2)
+## Known limitations (Phase 3)
 
-- Uploaded files, chunks, and vectors are not stored; every upload is processed from scratch.
-- If embedding fails, the whole upload fails (503). Per-document statuses arrive with storage.
-- Uploads wait for Voyage, so large documents take longer; background processing is planned for Phase 7.
-- Chunks never span pages, so a sentence that continues onto the next page is split. The last chunk on a page is often mostly overlap.
-- Chunk sizes are counted in characters, not model tokens.
-- No OCR: scanned PDFs return status `no_text`.
-- DOCX files have no page numbers (Word only works them out when it displays a document), so their text is one section. Headers, footers, footnotes, and text boxes are not extracted.
-- TXT files must be UTF-8.
-- Password-protected PDFs are rejected.
-- The size limit is checked after the upload arrives, so it protects parsing, not network bandwidth. A production deployment would also limit request size at the reverse proxy.
+- **Changing the embedding provider or model** puts new documents in a separate vector collection; documents indexed with the old model show `searchable: false` and must be deleted and uploaded again (automatic re-indexing is planned for Phase 7).
+- **One server process with local Chroma** (embedded in the app). With `CHROMA_MODE=cloud`, several instances can share the vectors, but document records (SQLite) and files (local disk) are still per machine; Postgres and S3/R2 adapters would complete that.
+- Switching `CHROMA_MODE` doesn't migrate vectors; upload documents again.
+- **No transactions across stores**: if the server crashes mid-upload, a record can stay `processing`. Repair and retries come in Phase 7.
+- Uploads wait for embedding and indexing to finish (background processing in Phase 7).
+- Chunks never span pages; the last chunk on a page is often mostly overlap; sizes are counted in characters, not tokens.
+- No OCR; TXT must be UTF-8; password-protected PDFs are rejected.
+- The upload size limit protects parsing, not bandwidth; production would also limit request size at the reverse proxy.
