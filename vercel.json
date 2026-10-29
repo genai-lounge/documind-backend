@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "*": false,
+      "main": true
+    }
+  },
+  "functions": {
+    "app/asgi.py": {
+      "excludeFiles": "{tests/**,docs/**,data/**,.github/**,**/__pycache__/**}"
+    }
+  }
+}

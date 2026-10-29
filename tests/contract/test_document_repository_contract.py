@@ -1,32 +1,59 @@
-"""Contract tests: rules every DocumentRepository must follow (fake and SQLite)."""
+"""Contract tests: rules every DocumentRepository must follow (fake, SQLite, Postgres).
 
-from collections.abc import Callable
+Postgres runs only when TEST_DATABASE_URL points at a throwaway database (CI
+starts one); its `documind.documents` table is emptied before every test.
+"""
+
+import os
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
 
 from app.application.ports import DocumentRepository
 from app.domain.models import DocumentRecord, DocumentStatus, EmbeddingModel
+from app.infrastructure.storage.postgres_document_repository import (
+    PostgresDocumentRepository,
+)
 from app.infrastructure.storage.sqlite_document_repository import (
     SqliteDocumentRepository,
 )
 from tests.fakes import InMemoryDocumentRepository
+
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+
+
+def postgres(_: Path) -> DocumentRepository:
+    if not TEST_DATABASE_URL:
+        pytest.skip("TEST_DATABASE_URL is not set")
+    repo = PostgresDocumentRepository(TEST_DATABASE_URL)
+    with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
+        conn.execute("TRUNCATE documind.documents")
+    return repo
+
 
 REPOSITORIES: dict[str, Callable[[Path], DocumentRepository]] = {
     "InMemoryDocumentRepository": lambda _: InMemoryDocumentRepository(),
     "SqliteDocumentRepository": lambda path: SqliteDocumentRepository(
         path / "db.sqlite"
     ),
+    "PostgresDocumentRepository": postgres,
 }
 T0 = datetime(2026, 10, 27, 9, 30, 15, 123456, tzinfo=UTC)
 
 
 @pytest.fixture(params=list(REPOSITORIES))
-def repo(request: pytest.FixtureRequest, tmp_path: Path) -> DocumentRepository:
-    return REPOSITORIES[request.param](tmp_path)
+def repo(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> Iterator[DocumentRepository]:
+    repository = REPOSITORIES[request.param](tmp_path)
+    yield repository
+    if isinstance(repository, PostgresDocumentRepository):
+        repository.close()
 
 
 BASE = DocumentRecord(
