@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.domain.errors import EmbeddingRateLimited, EmbeddingUnavailable
 from app.main import create_app
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, FakeLLMProvider
 
 URL = "/api/v1/embeddings/similarity"
 
@@ -16,6 +16,7 @@ def make_client(embedder: FakeEmbeddingProvider | None = None) -> TestClient:
         create_app(
             Settings(_env_file=None),
             embedding_provider=embedder or FakeEmbeddingProvider(),
+            llm_provider=FakeLLMProvider(),
         )
     )
 

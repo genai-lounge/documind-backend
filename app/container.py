@@ -10,11 +10,12 @@ immediately when the server starts, not on the first user request.
 
 from typing import Protocol, runtime_checkable
 
+from app.application.answer_question import AnswerQuestion
 from app.application.compare_texts import CompareTexts
 from app.application.ingest_document import IngestDocument
 from app.application.manage_documents import DeleteDocument, GetDocument, ListDocuments
 from app.application.parser_registry import ParserRegistry
-from app.application.ports import EmbeddingProvider
+from app.application.ports import EmbeddingProvider, LLMProvider
 from app.application.search_chunks import SearchChunks
 from app.application.validating_embedding_provider import ValidatingEmbeddingProvider
 from app.core.config import Settings
@@ -29,6 +30,7 @@ from app.infrastructure.parsing.python_docx_parser import PythonDocxParser
 from app.infrastructure.storage.sqlite_document_repository import (
     SqliteDocumentRepository,
 )
+from app.llm_providers import build_llm_provider
 from app.vector_stores import build_vector_store
 
 
@@ -39,11 +41,15 @@ class _Closeable(Protocol):
 
 class Container:
     def __init__(
-        self, settings: Settings, embedding_provider: EmbeddingProvider | None = None
+        self,
+        settings: Settings,
+        embedding_provider: EmbeddingProvider | None = None,
+        llm_provider: LLMProvider | None = None,
     ) -> None:
-        """`embedding_provider` replaces the configured vendor, e.g. with a fake in tests."""
+        """The optional providers replace the configured vendors, e.g. with fakes in tests."""
         self.settings = settings
         self._vendor_provider = embedding_provider or build_embedding_provider(settings)
+        self.llm = llm_provider or build_llm_provider(settings)
 
         self.parser_registry = ParserRegistry(
             {
@@ -85,9 +91,12 @@ class Container:
             max_top_k=settings.search_max_top_k,
         )
         self.compare_texts = CompareTexts(embedder=self.embedding_provider)
+        self.answer_question = AnswerQuestion(
+            search=self.search_chunks, llm=self.llm, top_k=settings.answer_top_k
+        )
 
     def close(self) -> None:
         """Release network connections at shutdown."""
-        for resource in (self._vendor_provider, self.files):
+        for resource in (self._vendor_provider, self.files, self.llm):
             if isinstance(resource, _Closeable):
                 resource.close()

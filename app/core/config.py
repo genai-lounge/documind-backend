@@ -38,6 +38,14 @@ class Settings(BaseSettings):
 
     data_dir: Path = BACKEND_DIR / "data"
 
+    anthropic_api_key: SecretStr | None = None
+    anthropic_model: str = "claude-haiku-5-5"
+    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    anthropic_max_tokens: int = Field(default=16000, ge=1024, le=128000)
+    anthropic_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    anthropic_max_retries: int = Field(default=2, ge=0, le=10)
+    answer_top_k: int = Field(default=5, ge=1, le=20)
+
     file_storage: Literal["local", "supabase"] = "local"
     supabase_url: str | None = None
     supabase_secret_key: SecretStr | None = None

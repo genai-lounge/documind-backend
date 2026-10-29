@@ -16,9 +16,16 @@ from app.application.ports import (
     DocumentRepository,
     EmbeddingProvider,
     FileStorage,
+    LLMProvider,
     VectorIndexReader,
     VectorIndexWriter,
     VectorSearcher,
+)
+from app.domain.answers import (
+    AnswerSegment,
+    CitedSpan,
+    EvidencePassage,
+    GeneratedAnswer,
 )
 from app.domain.models import (
     Chunk,
@@ -228,3 +235,41 @@ class InMemoryVectorStore(VectorIndexWriter, VectorSearcher, VectorIndexReader):
 
     def count(self, model: EmbeddingModel) -> int:
         return len(self.collections.get(model, {}))
+
+
+class FakeLLMProvider(LLMProvider):
+    """Answers from the first passage and cites it correctly, unless told otherwise.
+
+    `segments` replaces the answer (e.g. to cite a passage that wasn't sent);
+    `error` is raised instead of answering. Every call is recorded.
+    """
+
+    model_name = "fake-llm"
+
+    def __init__(
+        self,
+        segments: Sequence[AnswerSegment] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.segments = segments
+        self.error = error
+        self.calls: list[tuple[str, list[EvidencePassage]]] = []
+
+    def answer(
+        self, question: str, evidence: Sequence[EvidencePassage]
+    ) -> GeneratedAnswer:
+        self.calls.append((question, list(evidence)))
+        if self.error:
+            raise self.error
+        if self.segments is not None:
+            return GeneratedAnswer(segments=tuple(self.segments), model=self.model_name)
+        first = evidence[0]
+        return GeneratedAnswer(
+            segments=(
+                AnswerSegment(
+                    f"According to {first.title}, the answer is given.",
+                    (CitedSpan(0, first.text),),
+                ),
+            ),
+            model=self.model_name,
+        )

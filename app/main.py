@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.errors import register_error_handlers
 from app.api.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
 from app.api.v1.router import router as v1_router
-from app.application.ports import EmbeddingProvider
+from app.application.ports import EmbeddingProvider, LLMProvider
 from app.container import Container
 from app.core.config import Settings
 from app.core.logging_config import configure_logging
@@ -25,10 +25,13 @@ def create_app(
     settings: Settings | None = None,
     *,
     embedding_provider: EmbeddingProvider | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
     configure_logging(settings.log_level, settings.log_format)
-    container = Container(settings, embedding_provider=embedding_provider)
+    container = Container(
+        settings, embedding_provider=embedding_provider, llm_provider=llm_provider
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -42,6 +45,7 @@ def create_app(
     app.state.get_document = container.get_document
     app.state.delete_document = container.delete_document
     app.state.search_chunks = container.search_chunks
+    app.state.answer_question = container.answer_question
 
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(

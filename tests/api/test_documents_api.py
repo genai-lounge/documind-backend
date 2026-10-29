@@ -10,11 +10,11 @@ from app.container import Container
 from app.core.config import Settings
 from app.main import create_app
 from tests.factories import make_pdf
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, FakeLLMProvider
 
 SETTINGS = Settings(_env_file=None)
 EMBEDDER = FakeEmbeddingProvider(dimensions=16)
-app = create_app(SETTINGS, embedding_provider=EMBEDDER)
+app = create_app(SETTINGS, embedding_provider=EMBEDDER, llm_provider=FakeLLMProvider())
 client = TestClient(app)
 
 URL = "/api/v1/documents"
@@ -133,7 +133,9 @@ def test_empty_file() -> None:
 @pytest.fixture
 def ten_byte_limit() -> Iterator[None]:
     """Swap in a use case with a 10-byte limit, via dependency injection."""
-    container = Container(SETTINGS, embedding_provider=EMBEDDER)
+    container = Container(
+        SETTINGS, embedding_provider=EMBEDDER, llm_provider=FakeLLMProvider()
+    )
     app.dependency_overrides[get_ingest_document] = lambda: IngestDocument(
         parsers=container.parser_registry,
         chunker=container.chunker,

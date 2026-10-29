@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.domain.errors import (
+    AnswerRefused,
     DocumentNotFound,
     DocumentParseError,
     DocuMindError,
@@ -27,6 +28,8 @@ from app.domain.errors import (
     FileTooLarge,
     FileTypeMismatch,
     InvalidInput,
+    LLMRateLimited,
+    LLMUnavailable,
     MissingFilename,
     StorageUnavailable,
     UnsupportedFileType,
@@ -45,6 +48,8 @@ STATUS_BY_ERROR: dict[type[DocuMindError], int] = {
     InvalidInput: 422,
     DocumentNotFound: 404,
     StorageUnavailable: 503,
+    LLMUnavailable: 503,
+    AnswerRefused: 422,
 }
 
 CODE_BY_HTTP_STATUS = {404: "not_found", 405: "method_not_allowed"}
@@ -67,7 +72,10 @@ async def _handle_domain_error(request: Request, exc: Exception) -> JSONResponse
     status = status_for(exc)
     logger.info("request.rejected", extra={"code": exc.code, "status": status})
     headers = None
-    if isinstance(exc, EmbeddingRateLimited) and exc.retry_after_seconds is not None:
+    if (
+        isinstance(exc, EmbeddingRateLimited | LLMRateLimited)
+        and exc.retry_after_seconds is not None
+    ):
         headers = {"Retry-After": str(math.ceil(exc.retry_after_seconds))}
     return JSONResponse(
         status_code=status,
