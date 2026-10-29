@@ -4,9 +4,21 @@ import logging
 
 import pytest
 
-from app.application.answer_question import NO_DOCUMENTS_ANSWER, AnswerQuestion
-from app.application.search_chunks import SearchChunks
-from app.domain.answers import AnswerSegment, CitedSpan
+from app.application.answer_question import (
+    MAX_HISTORY_TURNS,
+    NO_DOCUMENTS_ANSWER,
+    AnswerQuestion,
+)
+from app.application.search_chunks import SearchChunks, SearchResult
+from app.domain.answers import (
+    AnswerCitationAdded,
+    AnswerDone,
+    AnswerEvent,
+    AnswerSegment,
+    AnswerTextDelta,
+    ChatTurn,
+    CitedSpan,
+)
 from app.domain.errors import AnswerRefused, InvalidInput, LLMUnavailable
 from app.domain.models import Chunk, EmbeddedChunk
 from tests.fakes import (
@@ -19,9 +31,26 @@ from tests.retrieval_dataset import DOCUMENTS
 EMBEDDER = WordOverlapEmbeddingProvider()
 
 
+class RecordingSearch(SearchChunks):
+    def __init__(self, vectors: InMemoryVectorStore) -> None:
+        super().__init__(EMBEDDER, vectors, default_top_k=3, max_top_k=10)
+        self.queries: list[str] = []
+
+    def execute(self, query: str, top_k: int | None = None) -> SearchResult:
+        self.queries.append(query)
+        return super().execute(query, top_k)
+
+
 def make(
     llm: FakeLLMProvider | None = None, empty: bool = False
 ) -> tuple[AnswerQuestion, FakeLLMProvider]:
+    use_case, llm, _ = make_with_search(llm, empty)
+    return use_case, llm
+
+
+def make_with_search(
+    llm: FakeLLMProvider | None = None, empty: bool = False
+) -> tuple[AnswerQuestion, FakeLLMProvider, RecordingSearch]:
     vectors = InMemoryVectorStore()
     if not empty:
         for name, text in DOCUMENTS.items():
@@ -36,8 +65,8 @@ def make(
                 ],
             )
     llm = llm or FakeLLMProvider()
-    search = SearchChunks(EMBEDDER, vectors, default_top_k=3, max_top_k=10)
-    return AnswerQuestion(search, llm, top_k=3), llm
+    search = RecordingSearch(vectors)
+    return AnswerQuestion(search, llm, top_k=3), llm, search
 
 
 def test_answers_with_a_checked_numbered_citation() -> None:
@@ -60,11 +89,12 @@ def test_model_receives_only_the_retrieved_passages_with_titles() -> None:
 
     use_case.execute("  What is the name of the office cat?  ")
 
-    question, evidence = llm.calls[0]
+    question, evidence, history = llm.calls[0]
     assert question == "What is the name of the office cat?"
     assert len(evidence) == 3
     assert evidence[0].title == "office.txt · page 1"
     assert evidence[0].source_id == "office:0"
+    assert history == []
 
 
 def test_no_documents_means_insufficient_evidence_without_calling_the_model() -> None:
@@ -132,7 +162,7 @@ def test_quotes_are_matched_ignoring_whitespace_differences() -> None:
 def test_citations_are_numbered_in_order_of_first_appearance() -> None:
     use_case, llm = make()
     use_case.execute("office cat Biscuit vacation days revenue")
-    _, evidence = llm.calls[0]
+    _, evidence, _ = llm.calls[0]
     llm.segments = [
         AnswerSegment("First claim.", (CitedSpan(2, evidence[2].text),)),
         AnswerSegment(
@@ -180,3 +210,124 @@ def test_never_logs_the_question_or_the_answer(
     logged = " ".join(str(vars(r)) for r in caplog.records)
     assert "secret name" not in logged
     assert answer.text not in logged
+
+
+# --- Streaming ---
+
+CAT = "What is the name of the office cat?"
+
+
+def test_streams_the_citation_before_the_text_and_markers_at_the_end_of_the_run() -> (
+    None
+):
+    use_case, llm = make()
+
+    events = list(use_case.open(CAT).events())
+
+    added, *deltas, done = events
+    assert isinstance(added, AnswerCitationAdded)
+    assert added.citation.number == 1
+    assert [d.text for d in deltas if isinstance(d, AnswerTextDelta)] == [
+        "According to office.txt · page 1, the answer is given.",
+        "[1]",
+    ]
+    assert done == AnswerDone(insufficient_evidence=False, model="fake-llm")
+    assert llm.streams[0].closed
+
+
+def test_a_fabricated_citation_in_the_middle_of_a_stream_is_dropped() -> None:
+    use_case, llm = make()
+    use_case.execute(CAT)
+    _, evidence, _ = llm.calls[0]
+    llm.segments = [
+        AnswerSegment("Biscuit.", (CitedSpan(0, evidence[0].text),)),
+        AnswerSegment(" It is orange.", (CitedSpan(1, "The cat is orange."),)),
+    ]
+
+    events = list(use_case.open(CAT).events())
+
+    assert [
+        e.citation.number for e in events if isinstance(e, AnswerCitationAdded)
+    ] == [1]
+    assert _text(events) == "Biscuit.[1] It is orange."
+
+
+def test_no_documents_streams_the_explanation_and_done() -> None:
+    use_case, llm = make(empty=True)
+
+    events = list(use_case.open("Anything?").events())
+
+    assert events == [
+        AnswerTextDelta(NO_DOCUMENTS_ANSWER),
+        AnswerDone(insufficient_evidence=True, model=None),
+    ]
+    assert llm.calls == []
+
+
+def test_errors_opening_the_model_stream_are_raised_by_open() -> None:
+    use_case, _ = make(FakeLLMProvider(error=LLMUnavailable("down")))
+
+    with pytest.raises(LLMUnavailable):
+        use_case.open(CAT)
+
+
+def test_errors_in_the_middle_of_the_stream_reach_the_caller_and_close_it() -> None:
+    llm = FakeLLMProvider(error_after=(2, LLMUnavailable("dropped")))
+    use_case, _ = make(llm)
+    received: list[AnswerEvent] = []
+
+    with pytest.raises(LLMUnavailable):
+        received.extend(use_case.open(CAT).events())
+
+    assert isinstance(received[0], AnswerCitationAdded)
+    assert not any(isinstance(e, AnswerDone) for e in received)
+    assert llm.streams[0].closed
+
+
+def test_closing_a_session_early_closes_the_model_stream() -> None:
+    use_case, llm = make()
+    session = use_case.open(CAT)
+
+    next(iter(session.events()))
+    session.close()
+
+    assert llm.streams[0].closed
+
+
+# --- Conversation context ---
+
+
+def test_a_follow_up_searches_with_the_previous_question_too() -> None:
+    use_case, llm, search = make_with_search()
+    history = [ChatTurn(CAT, "The cat is Biscuit.[1]")]
+
+    use_case.execute("  How old is it?  ", history)
+
+    assert search.queries == [f"{CAT}\nHow old is it?"]
+    question, _, sent_history = llm.calls[0]
+    assert question == "How old is it?"
+    assert sent_history == history
+
+
+def test_only_the_last_turns_are_sent_as_context() -> None:
+    use_case, llm, search = make_with_search()
+    history = [ChatTurn(f"question {i}", f"answer {i}") for i in range(5)]
+
+    use_case.execute(CAT, history)
+
+    _, _, sent_history = llm.calls[0]
+    assert sent_history == history[-MAX_HISTORY_TURNS:]
+    assert search.queries[0].startswith("question 4\n")
+
+
+def test_the_combined_follow_up_query_is_kept_within_the_search_limit() -> None:
+    use_case, _, search = make_with_search()
+
+    use_case.execute("office cat", [ChatTurn("x" * 2000, "a")])
+
+    assert len(search.queries[0]) == 2000
+    assert search.queries[0].endswith("\noffice cat")
+
+
+def _text(events: list[AnswerEvent]) -> str:
+    return "".join(e.text for e in events if isinstance(e, AnswerTextDelta))

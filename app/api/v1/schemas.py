@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, StringConstraints
 from app.application.compare_texts import SimilarityResult
 from app.application.manage_documents import DocumentDetail, DocumentOverview
 from app.application.search_chunks import MAX_QUERY_CHARS, SearchResult
-from app.domain.answers import Answer
+from app.domain.answers import Answer, ChatTurn, Citation
 from app.domain.models import (
     Chunk,
     Document,
@@ -288,13 +288,32 @@ class SearchResponse(BaseModel):
         )
 
 
+Question = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUERY_CHARS),
+]
+
+
+class ChatTurnIn(BaseModel):
+    """An earlier question and answer, sent back by the client as context."""
+
+    question: Question
+    answer: Annotated[str, StringConstraints(max_length=20000)]
+
+    def to_domain(self) -> ChatTurn:
+        return ChatTurn(question=self.question, answer=self.answer)
+
+
 class AskRequest(BaseModel):
-    question: Annotated[
-        str,
-        StringConstraints(
-            strip_whitespace=True, min_length=1, max_length=MAX_QUERY_CHARS
-        ),
-    ]
+    question: Question
+    history: list[ChatTurnIn] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Earlier turns, oldest first. Only the last 3 are used.",
+    )
+
+    def history_turns(self) -> list[ChatTurn]:
+        return [turn.to_domain() for turn in self.history]
 
 
 class CitationOut(BaseModel):
@@ -305,6 +324,18 @@ class CitationOut(BaseModel):
     chunk_index: int
     quote: str = Field(description="The passage text the answer relies on.")
     score: float
+
+    @classmethod
+    def from_domain(cls, citation: Citation) -> "CitationOut":
+        return cls(
+            number=citation.number,
+            document_id=citation.hit.document_id,
+            filename=citation.hit.filename,
+            page_number=citation.hit.chunk.page_number,
+            chunk_index=citation.hit.chunk.index,
+            quote=citation.quote,
+            score=citation.hit.score,
+        )
 
 
 class SourceOut(BaseModel):
@@ -318,6 +349,19 @@ class SourceOut(BaseModel):
     chunk_index: int
     text: str
     cited_as: int | None = Field(description="Its [n] number if the answer cites it.")
+
+    @classmethod
+    def from_hit(cls, hit: SearchHit, cited_as: int | None = None) -> "SourceOut":
+        return cls(
+            rank=hit.rank,
+            score=hit.score,
+            document_id=hit.document_id,
+            filename=hit.filename,
+            page_number=hit.chunk.page_number,
+            chunk_index=hit.chunk.index,
+            text=hit.chunk.text,
+            cited_as=cited_as,
+        )
 
 
 class AnswerResponse(BaseModel):
@@ -337,30 +381,15 @@ class AnswerResponse(BaseModel):
         return cls(
             answer=answer.text,
             insufficient_evidence=answer.insufficient_evidence,
-            citations=[
-                CitationOut(
-                    number=c.number,
-                    document_id=c.hit.document_id,
-                    filename=c.hit.filename,
-                    page_number=c.hit.chunk.page_number,
-                    chunk_index=c.hit.chunk.index,
-                    quote=c.quote,
-                    score=c.hit.score,
-                )
-                for c in answer.citations
-            ],
+            citations=[CitationOut.from_domain(c) for c in answer.citations],
             sources=[
-                SourceOut(
-                    rank=h.rank,
-                    score=h.score,
-                    document_id=h.document_id,
-                    filename=h.filename,
-                    page_number=h.chunk.page_number,
-                    chunk_index=h.chunk.index,
-                    text=h.chunk.text,
-                    cited_as=cited.get((h.document_id, h.chunk.index)),
-                )
+                SourceOut.from_hit(h, cited.get((h.document_id, h.chunk.index)))
                 for h in answer.retrieved
             ],
             model=answer.model,
         )
+
+
+class StreamDoneOut(BaseModel):
+    insufficient_evidence: bool
+    model: str | None

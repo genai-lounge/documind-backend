@@ -1,25 +1,30 @@
 """LLMProvider adapter for Claude, using Anthropic's official Python SDK.
 
 Each evidence passage is sent as a `search_result` content block with
-citations enabled, so Claude's answer comes back as text blocks whose
-citations name the passage they rely on (`search_result_index`) and quote it.
-See docs/adr/0015-answers-with-claude.md.
+citations enabled, so Claude's answer streams back as text whose citations
+name the passage they rely on (`search_result_index`) and quote it.
+See docs/adr/0015-answers-with-claude.md and 0016-streaming-chat.md.
 """
 
 import logging
+import re
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any, Literal
 
 import anthropic
 import httpx2
+from anthropic.lib.streaming import MessageStream, MessageStreamManager
 
-from app.application.ports import LLMProvider
+from app.application.ports import LLMAnswerStream, LLMProvider
 from app.domain.answers import (
-    AnswerSegment,
+    BlockEnd,
+    ChatTurn,
+    CitationClaim,
     CitedSpan,
     EvidencePassage,
-    GeneratedAnswer,
+    LLMEvent,
+    TextChunk,
 )
 from app.domain.errors import AnswerRefused, LLMRateLimited, LLMUnavailable
 
@@ -30,8 +35,10 @@ Effort = Literal["low", "medium", "high", "xhigh", "max"]
 SYSTEM_PROMPT = """\
 You answer questions about the user's documents.
 
-The user's message contains search results retrieved from those documents, \
-followed by their question. Answer using only those search results:
+The latest user message contains search results retrieved from those \
+documents, followed by their question. Earlier messages, if any, are the \
+conversation so far: use them only to understand what the question refers to. \
+Answer using only the search results in the latest message:
 
 - Base every statement on the search results and cite them. Do not use \
 outside knowledge or guess.
@@ -77,106 +84,153 @@ class ClaudeLLMProvider(LLMProvider):
             http_client=http_client,
         )
 
-    def answer(
-        self, question: str, evidence: Sequence[EvidencePassage]
-    ) -> GeneratedAnswer:
-        started = time.perf_counter()
-        response = self._create(question, evidence)
-
-        if response.stop_reason == "refusal":
-            category = response.stop_details.category if response.stop_details else None
-            logger.warning(
-                "llm.refused",
-                extra={
-                    "provider": "anthropic",
-                    "model": response.model,
-                    "category": category,
-                },
-            )
-            raise AnswerRefused(REFUSED)
-        if response.stop_reason == "max_tokens":
-            logger.warning("llm.truncated", extra={"provider": "anthropic"})
-            raise LLMUnavailable(TRUNCATED)
-
-        segments = tuple(
-            AnswerSegment(
-                text=block.text,
-                cited=tuple(
-                    CitedSpan(c.search_result_index, c.cited_text)
-                    for c in (block.citations or [])
-                    if c.type == "search_result_location"
-                ),
-            )
-            for block in response.content
-            if block.type == "text"
+    def stream_answer(
+        self,
+        question: str,
+        evidence: Sequence[EvidencePassage],
+        history: Sequence[ChatTurn] = (),
+    ) -> LLMAnswerStream:
+        """Opens the stream now, so connection and key problems raise before any text."""
+        manager = self._client.messages.stream(
+            model=self.model_name,
+            max_tokens=self._max_tokens,
+            system=SYSTEM_PROMPT,
+            output_config={"effort": self._effort},
+            messages=_messages(question, evidence, history),
         )
-        logger.info(
-            "llm.completed",
-            extra={
-                "provider": "anthropic",
-                "model": response.model,
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
-                "stop_reason": response.stop_reason,
-                "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-            },
-        )
-        return GeneratedAnswer(segments=segments, model=response.model)
+        try:
+            stream = manager.__enter__()
+        except anthropic.APIError as exc:
+            raise _domain_error(exc) from exc
+        return _ClaudeAnswerStream(manager, stream, self.model_name)
 
     def close(self) -> None:
         self._client.close()
 
-    def _create(
-        self, question: str, evidence: Sequence[EvidencePassage]
-    ) -> anthropic.types.Message:
-        content: list[Any] = [
-            {
-                "type": "search_result",
-                "source": passage.source_id,
-                "title": passage.title,
-                "content": [{"type": "text", "text": passage.text}],
-                "citations": {"enabled": True},
-            }
-            for passage in evidence
-        ]
-        content.append({"type": "text", "text": question})
+
+class _ClaudeAnswerStream(LLMAnswerStream):
+    def __init__(
+        self, manager: MessageStreamManager, stream: MessageStream, model: str
+    ) -> None:
+        self.model = model
+        self._manager = manager
+        self._stream = stream
+        self._closed = False
+        self._started = time.perf_counter()
+
+    def __iter__(self) -> Iterator[LLMEvent]:
         try:
-            return self._client.messages.create(
-                model=self.model_name,
-                max_tokens=self._max_tokens,
-                system=SYSTEM_PROMPT,
-                output_config={"effort": self._effort},
-                messages=[{"role": "user", "content": content}],
-            )
-        except anthropic.RateLimitError as exc:
-            raise LLMRateLimited(RATE_LIMITED, _retry_after(exc.response)) from exc
-        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
-            logger.error(
-                "llm.unauthorized",
-                extra={"provider": "anthropic", "hint": "Check ANTHROPIC_API_KEY."},
-            )
-            raise LLMUnavailable(MISCONFIGURED) from exc
-        except (anthropic.BadRequestError, anthropic.NotFoundError) as exc:
-            logger.error(
-                "llm.rejected",
+            for event in self._stream:
+                if event.type == "text":
+                    yield TextChunk(event.text)
+                elif event.type == "citation":
+                    citation = event.citation
+                    if citation.type == "search_result_location":
+                        yield CitationClaim(
+                            CitedSpan(citation.search_result_index, citation.cited_text)
+                        )
+                elif (
+                    event.type == "content_block_stop"
+                    and event.content_block.type == "text"
+                ):
+                    yield BlockEnd()
+            final = self._stream.get_final_message()
+        except anthropic.APIError as exc:
+            raise _domain_error(exc) from exc
+        finally:
+            self.close()
+
+        self.model = final.model
+        if final.stop_reason == "refusal":
+            category = final.stop_details.category if final.stop_details else None
+            logger.warning(
+                "llm.refused",
                 extra={
                     "provider": "anthropic",
-                    "status": exc.status_code,
-                    "detail": exc.message[:200],
+                    "model": final.model,
+                    "category": category,
                 },
             )
-            raise LLMUnavailable(REJECTED) from exc
-        except anthropic.APIStatusError as exc:
-            logger.warning(
-                "llm.failed", extra={"provider": "anthropic", "status": exc.status_code}
-            )
-            raise LLMUnavailable(UNAVAILABLE) from exc
-        except anthropic.APIConnectionError as exc:
-            logger.warning(
-                "llm.unreachable",
-                extra={"provider": "anthropic", "reason": type(exc).__name__},
-            )
-            raise LLMUnavailable(UNAVAILABLE) from exc
+            raise AnswerRefused(REFUSED)
+        if final.stop_reason == "max_tokens":
+            logger.warning("llm.truncated", extra={"provider": "anthropic"})
+            raise LLMUnavailable(TRUNCATED)
+        logger.info(
+            "llm.completed",
+            extra={
+                "provider": "anthropic",
+                "model": final.model,
+                "input_tokens": final.usage.input_tokens,
+                "output_tokens": final.usage.output_tokens,
+                "stop_reason": final.stop_reason,
+                "duration_ms": round((time.perf_counter() - self._started) * 1000, 1),
+            },
+        )
+
+    def close(self) -> None:
+        """Idempotent. Closing mid-answer stops the download, so no more tokens are produced."""
+        if not self._closed:
+            self._closed = True
+            self._manager.__exit__(None, None, None)
+
+
+_MARKERS = re.compile(r"\[\d+\]")
+
+
+def _messages(
+    question: str, evidence: Sequence[EvidencePassage], history: Sequence[ChatTurn]
+) -> list[Any]:
+    """Earlier turns as plain text (citation markers removed), then the evidence and question."""
+    messages: list[Any] = []
+    for turn in history:
+        messages.append({"role": "user", "content": turn.question})
+        messages.append(
+            {"role": "assistant", "content": _MARKERS.sub("", turn.answer).strip()}
+        )
+    content: list[Any] = [
+        {
+            "type": "search_result",
+            "source": passage.source_id,
+            "title": passage.title,
+            "content": [{"type": "text", "text": passage.text}],
+            "citations": {"enabled": True},
+        }
+        for passage in evidence
+    ]
+    content.append({"type": "text", "text": question})
+    messages.append({"role": "user", "content": content})
+    return messages
+
+
+def _domain_error(exc: anthropic.APIError) -> LLMUnavailable:
+    """Map SDK errors, most specific first. The key and the question are never logged."""
+    if isinstance(exc, anthropic.RateLimitError):
+        return LLMRateLimited(RATE_LIMITED, _retry_after(exc.response))
+    if isinstance(exc, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
+        logger.error(
+            "llm.unauthorized",
+            extra={"provider": "anthropic", "hint": "Check ANTHROPIC_API_KEY."},
+        )
+        return LLMUnavailable(MISCONFIGURED)
+    if isinstance(exc, anthropic.BadRequestError | anthropic.NotFoundError):
+        logger.error(
+            "llm.rejected",
+            extra={
+                "provider": "anthropic",
+                "status": exc.status_code,
+                "detail": exc.message[:200],
+            },
+        )
+        return LLMUnavailable(REJECTED)
+    if isinstance(exc, anthropic.APIStatusError):
+        logger.warning(
+            "llm.failed", extra={"provider": "anthropic", "status": exc.status_code}
+        )
+        return LLMUnavailable(UNAVAILABLE)
+    logger.warning(
+        "llm.unreachable", extra={"provider": "anthropic", "reason": type(exc).__name__}
+    )
+    return LLMUnavailable(UNAVAILABLE)
 
 
 def _retry_after(response: httpx2.Response) -> float | None:
