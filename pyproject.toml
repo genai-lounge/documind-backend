@@ -65,7 +65,7 @@ type = "layers"
 layers = [
     "app.main",
     "app.container",
-    "app.embedding_providers | app.vector_stores",
+    "app.embedding_providers | app.vector_stores | app.file_storages",
     "app.api | app.infrastructure",
     "app.core",
     "app.application",
@@ -98,6 +98,7 @@ source_modules = [
     "app.container",
     "app.embedding_providers",
     "app.vector_stores",
+    "app.file_storages",
     "app.main",
 ]
 forbidden_modules = ["pymupdf", "docx", "httpx2", "fastembed", "chromadb", "sqlite3"]

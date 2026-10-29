@@ -19,13 +19,13 @@ from app.application.search_chunks import SearchChunks
 from app.application.validating_embedding_provider import ValidatingEmbeddingProvider
 from app.core.config import Settings
 from app.embedding_providers import build_embedding_provider
+from app.file_storages import build_file_storage
 from app.infrastructure.chunking.recursive_character_chunker import (
     RecursiveCharacterChunker,
 )
 from app.infrastructure.parsing.plain_text_parser import PlainTextParser
 from app.infrastructure.parsing.pymupdf_parser import PyMuPdfParser
 from app.infrastructure.parsing.python_docx_parser import PythonDocxParser
-from app.infrastructure.storage.local_file_storage import LocalFileStorage
 from app.infrastructure.storage.sqlite_document_repository import (
     SqliteDocumentRepository,
 )
@@ -58,7 +58,7 @@ class Container:
         )
         self.embedding_provider = ValidatingEmbeddingProvider(self._vendor_provider)
 
-        self.files = LocalFileStorage(settings.uploads_dir)
+        self.files = build_file_storage(settings)
         self.documents = SqliteDocumentRepository(settings.database_path)
         self.vector_store = build_vector_store(settings)
 
@@ -88,5 +88,6 @@ class Container:
 
     def close(self) -> None:
         """Release network connections at shutdown."""
-        if isinstance(self._vendor_provider, _Closeable):
-            self._vendor_provider.close()
+        for resource in (self._vendor_provider, self.files):
+            if isinstance(resource, _Closeable):
+                resource.close()

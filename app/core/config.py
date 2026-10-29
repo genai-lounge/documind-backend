@@ -38,6 +38,11 @@ class Settings(BaseSettings):
 
     data_dir: Path = BACKEND_DIR / "data"
 
+    file_storage: Literal["local", "supabase"] = "local"
+    supabase_url: str | None = None
+    supabase_secret_key: SecretStr | None = None
+    supabase_bucket: str = "documents"
+
     chroma_mode: Literal["local", "cloud"] = "local"
     chroma_api_key: SecretStr | None = None
     chroma_tenant: str | None = None
