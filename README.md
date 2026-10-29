@@ -182,7 +182,6 @@ The backend runs on Vercel as a Python function (entry point `app/asgi.py`), nex
    | `ANTHROPIC_API_KEY` | as in your `.env` |
    | `MAX_UPLOAD_SIZE_MB` | `4` |
    | `LOG_FORMAT` | `json` |
-   | `VERCEL_SUPPORT_LARGE_FUNCTIONS` | `1` (the dependencies are larger than the standard 500 MB limit) |
    | `CORS_ALLOWED_ORIGINS` | the frontend's address, e.g. `https://documind-frontend.vercel.app` (add it once the frontend is deployed, then redeploy) |
 
 4. **Region:** Project → **Settings → Functions → Function Region**: choose the one closest to your Supabase region.
