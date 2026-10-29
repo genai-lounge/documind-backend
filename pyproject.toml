@@ -8,6 +8,8 @@ dependencies = [
     "chromadb>=1.5.9",
     "fastapi>=0.147.0",
     "httpx2>=2.14.0",
+    "psycopg[binary]>=3.3.6,<4",
+    "psycopg-pool>=3.3.3,<4",
     "pydantic-settings>=2.16.1",
     "pymupdf>=2.0",
     "python-docx>=1.2.0",
@@ -27,6 +29,9 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.1",
 ]
+
+[tool.vercel]
+entrypoint = "app.asgi:app"
 
 [tool.pytest.ini_options]
 filterwarnings = [
@@ -64,9 +69,10 @@ include_external_packages = true
 name = "Layers: composition root > api | infrastructure > core > application > domain"
 type = "layers"
 layers = [
+    "app.asgi",
     "app.main",
     "app.container",
-    "app.embedding_providers | app.vector_stores | app.file_storages | app.llm_providers",
+    "app.embedding_providers | app.vector_stores | app.file_storages | app.llm_providers | app.document_stores",
     "app.api | app.infrastructure",
     "app.core",
     "app.application",
@@ -88,6 +94,8 @@ forbidden_modules = [
     "fastembed",
     "chromadb",
     "sqlite3",
+    "psycopg",
+    "psycopg_pool",
     "anthropic",
 ]
 
@@ -102,7 +110,9 @@ source_modules = [
     "app.vector_stores",
     "app.file_storages",
     "app.llm_providers",
+    "app.document_stores",
     "app.main",
+    "app.asgi",
 ]
 forbidden_modules = [
     "pymupdf",
@@ -111,6 +121,8 @@ forbidden_modules = [
     "fastembed",
     "chromadb",
     "sqlite3",
+    "psycopg",
+    "psycopg_pool",
     "anthropic",
 ]
 # Reaching vendors THROUGH adapters (main -> container -> adapter) is the point

@@ -2,7 +2,7 @@
 
 The FastAPI backend for DocuMind, an educational RAG (Retrieval-Augmented Generation) app: upload documents, ask questions, and get Claude-generated answers with source citations you can check. The Next.js frontend lives in a separate repository (`documind-frontend`).
 
-**Current status: Phase 5 (streaming chat).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded (OpenAI by default, Voyage AI, or FastEmbed), and stored (files on disk or in Supabase Storage, records in SQLite, vectors in Chroma local or Chroma Cloud). You can **ask questions**: the closest passages are retrieved and Claude answers from them only, with citations that are checked against the passages actually retrieved; when the documents don't answer the question, it says so. Answers **stream** as server-sent events, and **follow-up questions** use the last 3 exchanges as context.
+**Current status: Phase 5 (streaming chat).** Uploaded PDF, DOCX, and TXT files are extracted, chunked, embedded (OpenAI by default, Voyage AI, or FastEmbed), and stored (files on disk or in Supabase Storage, records in SQLite or Postgres, vectors in Chroma local or Chroma Cloud). You can **ask questions**: the closest passages are retrieved and Claude answers from them only, with citations that are checked against the passages actually retrieved; when the documents don't answer the question, it says so. Answers **stream** as server-sent events, and **follow-up questions** use the last 3 exchanges as context.
 
 - [docs/architecture.md](docs/architecture.md): how the system is designed, with layers, ports, and request flow
 - [docs/adr/](docs/adr/README.md): why it is designed that way (Architecture Decision Records)
@@ -72,6 +72,17 @@ Answers are written by Claude through Anthropic's official Python SDK. The serve
 | `supabase` | `SUPABASE_URL` (Project Settings → API) and `SUPABASE_SECRET_KEY` (Project Settings → API Keys → secret key, `sb_secret_...`; the legacy `service_role` key also works) | Files go to a **private** bucket, `SUPABASE_BUCKET` (default `documents`), which the backend **creates at startup if it's missing** |
 
 The secret key bypasses Supabase's row-level security: keep it **only in `backend/.env`**, never in the frontend. On Supabase's free plan a project pauses after about a week of inactivity; the backend then refuses to start with a clear message until you resume it in the dashboard. Switching `FILE_STORAGE` doesn't move existing files. Tests and CI always use local storage; `make test-live` includes one tiny upload/overwrite/delete in your bucket when `FILE_STORAGE=supabase`.
+
+## Document records: SQLite or Postgres
+
+`DOCUMENT_STORE` chooses where the document library (one record per upload: name, size, status, chunk count, embedding model) is kept.
+
+| `DOCUMENT_STORE` | Needs | Notes |
+|---|---|---|
+| `sqlite` (default) | nothing | `DATA_DIR/documind.db`; one machine |
+| `postgres` | `DATABASE_URL`: in Supabase, click **Connect** → **Transaction pooler** and copy the URI, replacing `[YOUR-PASSWORD]` with your database password | Required on Vercel. The table `documind.documents` is created at startup if it's missing |
+
+`DATABASE_URL` contains your database password: keep it **only in `backend/.env`** and in Vercel's environment variables. The table is in its own `documind` schema, because Supabase publishes the `public` schema through its web API. Switching `DOCUMENT_STORE` doesn't copy records. Tests use SQLite; the Postgres contract tests run only when `TEST_DATABASE_URL` points at a **throwaway** database (CI starts one), because they empty the table.
 
 ## Vector store setup: local or Chroma Cloud
 
@@ -151,6 +162,34 @@ make test-live  # real vendors: each test skips itself unless that vendor's key 
 
 To make a failing check **block merging**: on GitHub, open the repository's **Settings → Branches → Add branch protection rule** (or **Rules → Rulesets**) for `main`, enable **Require status checks to pass before merging**, and select **Lint, types, architecture, tests**.
 
+## Deploy to Vercel
+
+The backend runs on Vercel as a Python function (entry point `app/asgi.py`), next to the frontend in a second Vercel project. See [ADR 0017](docs/adr/0017-deploy-on-vercel.md) for the reasons and limits. Every merge to `main` deploys to production automatically; other branches don't deploy (`vercel.json`).
+
+1. **Supabase:** in the project you already use for file storage, click **Connect** → **Transaction pooler**, copy the URI, and note the region shown there.
+2. **Vercel:** sign in at [vercel.com](https://vercel.com) with GitHub, then **Add New → Project** → import `documind-backend`. Vercel detects FastAPI; leave the build settings as they are.
+3. **Environment variables** (before the first deploy; Production environment):
+
+   | Variable | Value |
+   |---|---|
+   | `DOCUMENT_STORE` | `postgres` |
+   | `DATABASE_URL` | the transaction pooler URI, with your password |
+   | `FILE_STORAGE` | `supabase` |
+   | `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | as in your `.env` |
+   | `CHROMA_MODE` | `cloud` |
+   | `CHROMA_API_KEY` (and `CHROMA_TENANT`, `CHROMA_DATABASE` if you set them) | as in your `.env` |
+   | `EMBEDDING_PROVIDER` and its key (`OPENAI_API_KEY` by default) | as in your `.env` |
+   | `ANTHROPIC_API_KEY` | as in your `.env` |
+   | `MAX_UPLOAD_SIZE_MB` | `4` |
+   | `LOG_FORMAT` | `json` |
+   | `VERCEL_SUPPORT_LARGE_FUNCTIONS` | `1` (the dependencies are larger than the standard 500 MB limit) |
+   | `CORS_ALLOWED_ORIGINS` | the frontend's address, e.g. `https://documind-frontend.vercel.app` (add it once the frontend is deployed, then redeploy) |
+
+4. **Region:** Project → **Settings → Functions → Function Region**: choose the one closest to your Supabase region.
+5. **Deploy**, then open `https://<your-backend>.vercel.app/api/v1/health`; it should return `{"status":"ok"}`. If deployment fails, the build log says which setting is missing.
+
+The server refuses to start on Vercel unless records, files, and vectors are all stored online and uploads are at most 4 MB, because a function's disk is temporary and Vercel limits request bodies to 4.5 MB.
+
 All Python commands go through `uv run`. To add a dependency, use `uv add <pkg>` (or `uv add --dev <pkg>`), not pip.
 
 ## Configuration
@@ -176,6 +215,8 @@ Settings are read from environment variables and from `backend/.env` (loaded aut
 | `EMBEDDING_TIMEOUT_SECONDS` | `30` | Read timeout per HTTP request |
 | `EMBEDDING_MAX_RETRIES` | `3` | Retries on rate limits, server errors, and timeouts (0–10) |
 | `DATA_DIR` | `backend/data` | Where files, the SQLite database, and local Chroma are stored |
+| `DOCUMENT_STORE` | `sqlite` | `sqlite` (`DATA_DIR/documind.db`) or `postgres` |
+| `DATABASE_URL` | none | Required when `DOCUMENT_STORE=postgres`: `postgresql://...` (contains your password; backend only) |
 | `FILE_STORAGE` | `local` | `local` (disk) or `supabase` (Supabase Storage) |
 | `SUPABASE_URL` | none | Required when `FILE_STORAGE=supabase`, e.g. `https://abcd.supabase.co` |
 | `SUPABASE_SECRET_KEY` | none | Required when `FILE_STORAGE=supabase`; backend only |
@@ -210,7 +251,8 @@ Each embedding call logs `embedding.completed` with the provider, model, batch c
 ## Known limitations (Phase 5)
 
 - **Changing the embedding provider or model** puts new documents in a separate vector collection; documents indexed with the old model show `searchable: false` and must be deleted and uploaded again (automatic re-indexing is planned for Phase 7).
-- **One server process with local Chroma** (embedded in the app). With `CHROMA_MODE=cloud`, several instances can share the vectors, and with `FILE_STORAGE=supabase` so can the files, but document records (SQLite) are still per machine; a Postgres adapter (for example Supabase's database) would complete that.
+- With the defaults (SQLite, local Chroma, local files), everything is on one machine. With `DOCUMENT_STORE=postgres`, `FILE_STORAGE=supabase`, and `CHROMA_MODE=cloud`, any number of server instances share the same data (as on Vercel).
+- On Vercel, uploads are limited to 4 MB, and the first request after a quiet period is slower (a cold start).
 - Switching `CHROMA_MODE` doesn't migrate vectors; upload documents again.
 - **No transactions across stores**: if the server crashes mid-upload, a record can stay `processing`. Repair and retries come in Phase 7.
 - The server stores no conversations: the client sends recent turns with each question. Follow-ups are found by searching with the previous question added, not by rewriting the question.

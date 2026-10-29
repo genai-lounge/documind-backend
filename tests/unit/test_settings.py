@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -27,6 +29,14 @@ def test_cors_origins_are_comma_separated(monkeypatch: pytest.MonkeyPatch) -> No
     assert Settings(_env_file=None).cors_allowed_origins == [
         "http://a.example",
         "http://b.example",
+    ]
+
+
+def test_cors_origins_ignore_a_trailing_slash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://documind.vercel.app/")
+
+    assert Settings(_env_file=None).cors_allowed_origins == [
+        "https://documind.vercel.app"
     ]
 
 
@@ -115,3 +125,42 @@ def test_api_key_is_hidden_when_printed(monkeypatch: pytest.MonkeyPatch) -> None
     assert "pa-super-secret" not in repr(settings)
     assert settings.voyage_api_key is not None
     assert settings.voyage_api_key.get_secret_value() == "pa-super-secret"
+
+
+ONLINE_STORAGE: dict[str, Any] = {
+    "document_store": "postgres",
+    "file_storage": "supabase",
+    "chroma_mode": "cloud",
+    "max_upload_size_mb": 4,
+}
+
+
+def test_vercel_is_read_from_its_environment_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VERCEL", "1")
+
+    assert Settings(_env_file=None, **ONLINE_STORAGE).vercel is True
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"document_store": "sqlite"}, "DOCUMENT_STORE=postgres"),
+        ({"file_storage": "local"}, "FILE_STORAGE=supabase"),
+        ({"chroma_mode": "local"}, "CHROMA_MODE=cloud"),
+        ({"max_upload_size_mb": 10}, "MAX_UPLOAD_SIZE_MB=4 or less"),
+    ],
+)
+def test_on_vercel_everything_must_be_stored_online(
+    change: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None, vercel=True, **{**ONLINE_STORAGE, **change})
+
+
+def test_local_storage_is_fine_off_vercel() -> None:
+    settings = Settings(_env_file=None, max_upload_size_mb=10)
+
+    assert settings.document_store == "sqlite"
+    assert settings.vercel is False

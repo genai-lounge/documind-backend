@@ -18,6 +18,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = BACKEND_DIR / ".env"
+VERCEL_MAX_UPLOAD_MB = 4
 
 
 class ConfigurationError(RuntimeError):
@@ -45,6 +46,11 @@ class Settings(BaseSettings):
     anthropic_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     anthropic_max_retries: int = Field(default=2, ge=0, le=10)
     answer_top_k: int = Field(default=5, ge=1, le=20)
+
+    document_store: Literal["sqlite", "postgres"] = "sqlite"
+    database_url: SecretStr | None = None
+
+    vercel: bool = False
 
     file_storage: Literal["local", "supabase"] = "local"
     supabase_url: str | None = None
@@ -83,7 +89,9 @@ class Settings(BaseSettings):
     @classmethod
     def _split_comma_separated(cls, value: object) -> object:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            value = value.split(",")
+        if isinstance(value, list):
+            return [str(o).strip().rstrip("/") for o in value if str(o).strip()]
         return value
 
     @model_validator(mode="after")
@@ -96,6 +104,27 @@ class Settings(BaseSettings):
     def _default_top_k_within_max(self) -> "Settings":
         if self.search_default_top_k > self.search_max_top_k:
             raise ValueError("SEARCH_DEFAULT_TOP_K must not exceed SEARCH_MAX_TOP_K")
+        return self
+
+    @model_validator(mode="after")
+    def _serverless_needs_online_storage(self) -> "Settings":
+        """Vercel sets VERCEL=1. Its disk is temporary, and request bodies are capped at 4.5 MB."""
+        if not self.vercel:
+            return self
+        problems = []
+        if self.document_store != "postgres":
+            problems.append("DOCUMENT_STORE=postgres")
+        if self.file_storage != "supabase":
+            problems.append("FILE_STORAGE=supabase")
+        if self.chroma_mode != "cloud":
+            problems.append("CHROMA_MODE=cloud")
+        if self.max_upload_size_mb > VERCEL_MAX_UPLOAD_MB:
+            problems.append(f"MAX_UPLOAD_SIZE_MB={VERCEL_MAX_UPLOAD_MB} or less")
+        if problems:
+            raise ValueError(
+                "On Vercel, files on disk are lost between requests and uploads are "
+                "limited to 4.5 MB. Set " + ", ".join(problems) + "."
+            )
         return self
 
     @property
