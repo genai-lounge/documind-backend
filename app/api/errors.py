@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.domain.errors import (
+    DocumentNotFound,
     DocumentParseError,
     DocuMindError,
     EmbeddingRateLimited,
@@ -25,7 +26,9 @@ from app.domain.errors import (
     EmptyFile,
     FileTooLarge,
     FileTypeMismatch,
+    InvalidInput,
     MissingFilename,
+    StorageUnavailable,
     UnsupportedFileType,
 )
 
@@ -39,6 +42,9 @@ STATUS_BY_ERROR: dict[type[DocuMindError], int] = {
     FileTypeMismatch: 415,
     DocumentParseError: 422,
     EmbeddingUnavailable: 503,
+    InvalidInput: 422,
+    DocumentNotFound: 404,
+    StorageUnavailable: 503,
 }
 
 CODE_BY_HTTP_STATUS = {404: "not_found", 405: "method_not_allowed"}

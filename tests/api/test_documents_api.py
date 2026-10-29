@@ -138,6 +138,9 @@ def ten_byte_limit() -> Iterator[None]:
         parsers=container.parser_registry,
         chunker=container.chunker,
         embedder=container.embedding_provider,
+        files=container.files,
+        documents=container.documents,
+        vectors=container.vector_store,
         max_upload_bytes=10,
     )
     yield

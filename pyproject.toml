@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "DocuMind backend: FastAPI API for the RAG document assistant"
 requires-python = ">=3.12"
 dependencies = [
+    "chromadb>=1.5.9",
     "fastapi>=0.147.0",
     "httpx2>=2.14.0",
     "pydantic-settings>=2.16.1",
@@ -64,7 +65,7 @@ type = "layers"
 layers = [
     "app.main",
     "app.container",
-    "app.embedding_providers",
+    "app.embedding_providers | app.vector_stores",
     "app.api | app.infrastructure",
     "app.core",
     "app.application",
@@ -84,6 +85,8 @@ forbidden_modules = [
     "docx",
     "httpx2",
     "fastembed",
+    "chromadb",
+    "sqlite3",
 ]
 
 [[tool.importlinter.contracts]]
@@ -94,9 +97,10 @@ source_modules = [
     "app.core",
     "app.container",
     "app.embedding_providers",
+    "app.vector_stores",
     "app.main",
 ]
-forbidden_modules = ["pymupdf", "docx", "httpx2", "fastembed"]
+forbidden_modules = ["pymupdf", "docx", "httpx2", "fastembed", "chromadb", "sqlite3"]
 # Reaching vendors THROUGH adapters (main -> container -> adapter) is the point
 # of wiring; only direct imports are forbidden.
 allow_indirect_imports = true

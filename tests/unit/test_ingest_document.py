@@ -6,6 +6,7 @@ rules (validation order, limits, status, warnings).
 
 import io
 import logging
+from typing import BinaryIO
 
 import pytest
 
@@ -21,12 +22,30 @@ from app.domain.errors import (
     UnsupportedFileType,
 )
 from app.domain.models import (
+    Document,
     DocumentMetadata,
     ExtractionStatus,
     ParsedContent,
     Section,
 )
-from tests.fakes import FakeChunker, FakeEmbeddingProvider, FakeParser
+from tests.fakes import (
+    FakeChunker,
+    FakeEmbeddingProvider,
+    FakeParser,
+    InMemoryDocumentRepository,
+    InMemoryFileStorage,
+    InMemoryVectorStore,
+)
+
+
+class UseCaseUnderTest:
+    """IngestDocument wired to in-memory stores; `execute` returns the Document."""
+
+    def __init__(self, use_case: IngestDocument) -> None:
+        self.use_case = use_case
+
+    def execute(self, filename: str, upload: BinaryIO) -> Document:
+        return self.use_case.execute(filename, upload).document
 
 
 def make_use_case(
@@ -34,14 +53,19 @@ def make_use_case(
     max_upload_bytes: int = 100,
     extensions: tuple[str, ...] = (".fake",),
     embedder: FakeEmbeddingProvider | None = None,
-) -> IngestDocument:
+) -> UseCaseUnderTest:
     parser = parser or FakeParser()
-    return IngestDocument(
-        parsers=ParserRegistry({ext: parser for ext in extensions}),
-        chunker=FakeChunker(),
-        embedder=embedder or FakeEmbeddingProvider(),
-        max_upload_bytes=max_upload_bytes,
-        new_id=lambda: "fixed-id",
+    return UseCaseUnderTest(
+        IngestDocument(
+            parsers=ParserRegistry({ext: parser for ext in extensions}),
+            chunker=FakeChunker(),
+            embedder=embedder or FakeEmbeddingProvider(),
+            files=InMemoryFileStorage(),
+            documents=InMemoryDocumentRepository(),
+            vectors=InMemoryVectorStore(),
+            max_upload_bytes=max_upload_bytes,
+            new_id=lambda: "fixed-id",
+        )
     )
 
 

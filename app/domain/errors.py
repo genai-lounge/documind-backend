@@ -62,3 +62,19 @@ class EmbeddingRateLimited(EmbeddingUnavailable):
     def __init__(self, message: str, retry_after_seconds: float | None = None) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+class InvalidInput(DocuMindError):
+    """A request value breaks a business rule (e.g. top_k above the maximum)."""
+
+    code = "invalid_input"
+
+
+class DocumentNotFound(DocuMindError):
+    code = "document_not_found"
+
+
+class StorageUnavailable(DocuMindError):
+    """A store (files, records, or vectors) failed. Details are only in the logs."""
+
+    code = "storage_unavailable"

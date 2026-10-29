@@ -26,3 +26,4 @@ data/chroma/*
 !data/chroma/.gitkeep
 
 data/models/
+data/documind.db*
