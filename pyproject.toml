@@ -14,7 +14,6 @@ dependencies = [
     "pymupdf>=2.0",
     "python-docx>=1.2.0",
     "python-multipart>=0.0.32",
-    "uvicorn[standard]>=0.54.0",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +27,14 @@ dev = [
     "mypy>=2.4.0",
     "pytest>=9.1.1",
     "ruff>=0.17.1",
+    "uvicorn[standard]>=0.54.0",
 ]
+
+[tool.uv]
+# chromadb pulls these in for features DocuMind never uses (running Chroma on
+# Kubernetes, and Chroma's built-in embedding model); leaving them out keeps the
+# Vercel bundle under its 500 MB limit. See docs/adr/0017-deploy-on-vercel.md.
+exclude-dependencies = ["kubernetes", "onnxruntime"]
 
 [tool.vercel]
 entrypoint = "app.asgi:app"
