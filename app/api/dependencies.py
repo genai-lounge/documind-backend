@@ -12,6 +12,7 @@ in a different instance without touching any route code.
 
 from fastapi import Request
 
+from app.application.answer_question import AnswerQuestion
 from app.application.compare_texts import CompareTexts
 from app.application.ingest_document import IngestDocument
 from app.application.manage_documents import DeleteDocument, GetDocument, ListDocuments
@@ -45,4 +46,9 @@ def get_delete_document(request: Request) -> DeleteDocument:
 
 def get_search_chunks(request: Request) -> SearchChunks:
     use_case: SearchChunks = request.app.state.search_chunks
+    return use_case
+
+
+def get_answer_question(request: Request) -> AnswerQuestion:
+    use_case: AnswerQuestion = request.app.state.answer_question
     return use_case

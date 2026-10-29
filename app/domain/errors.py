@@ -78,3 +78,23 @@ class StorageUnavailable(DocuMindError):
     """A store (files, records, or vectors) failed. Details are only in the logs."""
 
     code = "storage_unavailable"
+
+
+class LLMUnavailable(DocuMindError):
+    """The language model failed, timed out, or isn't configured correctly."""
+
+    code = "llm_unavailable"
+
+
+class LLMRateLimited(LLMUnavailable):
+    code = "llm_rate_limited"
+
+    def __init__(self, message: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class AnswerRefused(DocuMindError):
+    """The model's safety checks declined to answer this question."""
+
+    code = "answer_refused"

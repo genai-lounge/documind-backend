@@ -19,7 +19,7 @@ from app.infrastructure.parsing.plain_text_parser import PlainTextParser
 from app.infrastructure.parsing.pymupdf_parser import PyMuPdfParser
 from app.infrastructure.parsing.python_docx_parser import PythonDocxParser
 from tests.factories import make_docx, make_pdf
-from tests.fakes import FakeEmbeddingProvider
+from tests.fakes import FakeEmbeddingProvider, FakeLLMProvider
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,9 @@ SAMPLES: dict[type[DocumentParser], Samples] = {
 }
 
 REGISTRY = Container(
-    Settings(_env_file=None), embedding_provider=FakeEmbeddingProvider()
+    Settings(_env_file=None),
+    embedding_provider=FakeEmbeddingProvider(),
+    llm_provider=FakeLLMProvider(),
 ).parser_registry
 REGISTERED = [REGISTRY.get(ext) for ext in REGISTRY.supported_extensions]
 

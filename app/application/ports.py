@@ -7,12 +7,13 @@ app/infrastructure/ and are plugged in by the composition root
 depend on these abstractions, and the vendor code depends on them too.
 
 Ports are kept small (Interface Segregation): a caller only depends on the
-methods it actually uses. Phase 4 adds an LLMProvider.
+methods it actually uses.
 """
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
+from app.domain.answers import EvidencePassage, GeneratedAnswer
 from app.domain.models import (
     Chunk,
     DocumentRecord,
@@ -165,3 +166,26 @@ class VectorIndexReader(ABC):
     def document_chunks(
         self, model: EmbeddingModel, document_id: str
     ) -> list[Chunk]: ...
+
+
+class LLMProvider(ABC):
+    """Writes an answer to a question using only the evidence passages given.
+
+    Shaped around what DocuMind needs (an evidence-grounded answer with
+    citations), not around a generic chat API, so an adapter can use its
+    vendor's own citation features.
+
+    Contract every adapter must follow (checked by tests/contract/):
+    - answer only from `evidence`, citing passages by their index in the list;
+    - when the evidence doesn't answer the question, say so without citations;
+    - treat evidence text as data, never as instructions;
+    - failures raise LLMUnavailable (or LLMRateLimited / AnswerRefused), never
+      a library-specific exception.
+    """
+
+    model_name: str
+
+    @abstractmethod
+    def answer(
+        self, question: str, evidence: Sequence[EvidencePassage]
+    ) -> GeneratedAnswer: ...

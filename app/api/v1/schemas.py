@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, StringConstraints
 from app.application.compare_texts import SimilarityResult
 from app.application.manage_documents import DocumentDetail, DocumentOverview
 from app.application.search_chunks import MAX_QUERY_CHARS, SearchResult
+from app.domain.answers import Answer
 from app.domain.models import (
     Chunk,
     Document,
@@ -284,4 +285,82 @@ class SearchResponse(BaseModel):
         return cls(
             embedding=EmbeddingModelOut.from_domain(result.model),
             hits=[SearchHitOut.from_domain(h) for h in result.hits],
+        )
+
+
+class AskRequest(BaseModel):
+    question: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True, min_length=1, max_length=MAX_QUERY_CHARS
+        ),
+    ]
+
+
+class CitationOut(BaseModel):
+    number: int = Field(description="The [n] marker used in the answer text.")
+    document_id: str
+    filename: str
+    page_number: int | None
+    chunk_index: int
+    quote: str = Field(description="The passage text the answer relies on.")
+    score: float
+
+
+class SourceOut(BaseModel):
+    """A passage that was retrieved and given to the model, cited or not."""
+
+    rank: int
+    score: float
+    document_id: str
+    filename: str
+    page_number: int | None
+    chunk_index: int
+    text: str
+    cited_as: int | None = Field(description="Its [n] number if the answer cites it.")
+
+
+class AnswerResponse(BaseModel):
+    answer: str
+    insufficient_evidence: bool = Field(
+        description="True when no retrieved passage supports an answer."
+    )
+    citations: list[CitationOut]
+    sources: list[SourceOut]
+    model: str | None
+
+    @classmethod
+    def from_domain(cls, answer: Answer) -> "AnswerResponse":
+        cited = {
+            (c.hit.document_id, c.hit.chunk.index): c.number for c in answer.citations
+        }
+        return cls(
+            answer=answer.text,
+            insufficient_evidence=answer.insufficient_evidence,
+            citations=[
+                CitationOut(
+                    number=c.number,
+                    document_id=c.hit.document_id,
+                    filename=c.hit.filename,
+                    page_number=c.hit.chunk.page_number,
+                    chunk_index=c.hit.chunk.index,
+                    quote=c.quote,
+                    score=c.hit.score,
+                )
+                for c in answer.citations
+            ],
+            sources=[
+                SourceOut(
+                    rank=h.rank,
+                    score=h.score,
+                    document_id=h.document_id,
+                    filename=h.filename,
+                    page_number=h.chunk.page_number,
+                    chunk_index=h.chunk.index,
+                    text=h.chunk.text,
+                    cited_as=cited.get((h.document_id, h.chunk.index)),
+                )
+                for h in answer.retrieved
+            ],
+            model=answer.model,
         )

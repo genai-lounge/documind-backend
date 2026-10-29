@@ -13,7 +13,11 @@ from app.application.ports import EmbeddingProvider
 from app.core.config import Settings
 from app.domain.errors import EmbeddingUnavailable
 from app.main import create_app
-from tests.fakes import FakeEmbeddingProvider, WordOverlapEmbeddingProvider
+from tests.fakes import (
+    FakeEmbeddingProvider,
+    FakeLLMProvider,
+    WordOverlapEmbeddingProvider,
+)
 from tests.retrieval_dataset import DOCUMENTS, QUESTIONS
 
 DOCS = "/api/v1/documents"
@@ -25,7 +29,11 @@ def make_client(
 ) -> TestClient:
     settings = Settings(_env_file=None, data_dir=data_dir)
     provider = embedder or WordOverlapEmbeddingProvider()
-    return TestClient(create_app(settings, embedding_provider=provider))
+    return TestClient(
+        create_app(
+            settings, embedding_provider=provider, llm_provider=FakeLLMProvider()
+        )
+    )
 
 
 def upload(client: TestClient, name: str, text: str) -> str:
